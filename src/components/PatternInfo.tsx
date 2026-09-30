@@ -1,3 +1,5 @@
+import type { PaletteSystemId, PaletteSystemOption } from '../lib/color'
+
 interface Props {
   fileName: string
   cols: number
@@ -17,6 +19,9 @@ interface Props {
   onClearCodes: () => void
   allowForeignColors: boolean
   onAllowForeignColors: (v: boolean) => void
+  paletteSystem: PaletteSystemId
+  paletteSystems: readonly PaletteSystemOption[]
+  onPaletteSystem: (id: PaletteSystemId) => void
 
   lowCount: number
   lowCursor: number
@@ -53,6 +58,9 @@ export default function PatternInfo({
   onClearCodes,
   allowForeignColors,
   onAllowForeignColors,
+  paletteSystem,
+  paletteSystems,
+  onPaletteSystem,
   lowCount,
   lowCursor,
   onJumpLow,
@@ -101,6 +109,31 @@ export default function PatternInfo({
           </li>
         )}
       </ul>
+
+      <h3>色号体系</h3>
+      <p className="hint small">
+        MARD 的色号表分两套：<b>221 色</b>是国内零售最常见的版本（只到 A–H 和 M），
+        <b>291 色</b>是它的扩展（多出 P / Q / R / T / Y / ZG 共 70 个色号）。
+        选错的话，识别结果里会出现<b>图纸上根本不存在的色号</b> ——
+        这正是「原图没有 P1、R8 却识别出来了」的原因。
+      </p>
+      <div className="seg-row">
+        {paletteSystems.map((s) => (
+          <button
+            key={s.id}
+            type="button"
+            className={`btn seg${paletteSystem === s.id ? ' active' : ''}`}
+            onClick={() => onPaletteSystem(s.id)}
+            title={s.hint}
+          >
+            {s.label}
+          </button>
+        ))}
+      </div>
+      <p className="hint small">
+        {paletteSystems.find((s) => s.id === paletteSystem)?.hint}
+        {paletteSystem === 'MARD221' && '（默认：零售最常见，也最保守）'}
+      </p>
 
       <h3>按图纸图例约束色板</h3>
       {allowedCount === null && colorCount > 50 && (

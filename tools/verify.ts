@@ -8,7 +8,7 @@ import { PALETTE, deltaE2000, rgbToLab } from '../src/lib/color'
 import { detectGrid, estimatePageBackground, debugProfiles } from '../src/lib/gridDetect'
 import { buildPattern, derivePlan, rawCounts } from '../src/lib/pattern'
 import { buildRegions, buildSteps } from '../src/lib/order'
-import { PALETTE, codeOf, formatColorCode, resolveColorCodes } from '../src/lib/color'
+import { PALETTE, codeOf, formatColorCode, indicesInSystem, resolveColorCodes } from '../src/lib/color'
 import { EMPTY, type GridSpec, type Region, type RegionOrderMode } from '../src/types'
 
 /* ----------------------------- PNG 编解码 ----------------------------- */
@@ -646,6 +646,72 @@ function verifyStrictPalette(c: Case, spec: CaseSpec): Report {
   }
 }
 
+/* ----------------------------- 色号体系校验 ----------------------------- */
+
+/**
+ * 「选了 MARD 221 就绝不可能识别出 P/Q/R/T/Y/ZG」的回归测试。
+ *
+ * 背景：用户报「上传 MARD 图纸后识别出原图没有的 P1、R8」，且这两个色号原图里确实没有。
+ * 查证后确认 MARD 有两套体系：
+ *   221 色 = A–H(26/32/29/26/24/25/21/23) + M(15)
+ *   291 色 = 221 + P(23) Q(5) R(28) T(1) Y(5) ZG(8)，共多 70 个
+ * 数据源 github.com/HansBug/pindou-color-data；已验证 221 ⊂ 291 且共享色号 HEX 完全一致。
+ *
+ * 我们的色板是 291，用户的图纸是 221。没有「体系」这个概念时，匹配不上就会落到那 70 个
+ * **在图纸里根本不存在**的色号上 —— 这是数据问题，不是算法问题。
+ */
+function verifyPaletteSystem(c: Case, spec: CaseSpec): Report {
+  const img = toImageData(c)
+  const grid: GridSpec = {
+    offsetX: c.originX,
+    offsetY: c.originY,
+    cellW: spec.cell,
+    cellH: spec.cell,
+    cols: spec.cols,
+    rows: spec.rows,
+  }
+  const i221 = indicesInSystem('MARD221')
+  const i291 = indicesInSystem('MARD291')
+  const set221 = new Set(i221)
+  const norm = (s: string) => s.replace(/^([A-Z]+)0*(\d+)$/, '$1$2')
+  const idxOf = (code: string) => PALETTE.findIndex((p) => norm(p.keys.MARD ?? '') === code)
+  const mag = idxOf('P1')
+  const ran = idxOf('R8')
+
+  // 用 221 当候选集识别 —— 等价于「不粘图例时的默认行为」
+  const res = buildPattern(img, grid, {
+    name: 'sys',
+    imageUrl: '',
+    imageHash: 'sys',
+    dropBackground: false,
+    allowed: i221,
+  })
+  const used = new Set<number>()
+  for (let i = 0; i < res.pattern.cells.length; i++) {
+    const v = res.pattern.cells[i]
+    if (v !== EMPTY) used.add(v)
+  }
+  const outside = [...used].filter((v) => !set221.has(v)).map((v) => norm(PALETTE[v].keys.MARD ?? ''))
+
+  const checks: [string, boolean, string][] = [
+    ['221 体系恰为 221 色', i221.length === 221, `${i221.length} 色`],
+    ['291 体系恰为 291 色', i291.length === 291, `${i291.length} 色`],
+    ['P1 被排除在 221 之外', mag >= 0 && !set221.has(mag), mag >= 0 ? '色板里有 P01，已排除' : '色板里没有'],
+    ['R8 被排除在 221 之外', ran >= 0 && !set221.has(ran), ran >= 0 ? '色板里有 R08，已排除' : '色板里没有'],
+    [
+      '用 221 识别后没有体系外的色号',
+      outside.length === 0,
+      outside.length === 0 ? `用到 ${used.size} 种，全在体系内` : `越界：${outside.join(' ')}`,
+    ],
+  ]
+
+  return {
+    name: '色号体系：MARD 221 不会识别出 P/Q/R/T/Y/ZG',
+    ok: checks.every(([, ok]) => ok),
+    lines: checks.map(([n, ok, d]) => `  ${ok ? '✓' : '✗'} ${n} — ${d}`),
+  }
+}
+
 /* ----------------------------- 拼块顺序校验 ----------------------------- */
 
 /**
@@ -947,6 +1013,13 @@ function main() {
   for (const l of strictRep.lines) console.log('    ' + l)
   console.log('')
   reports.push(strictRep)
+
+  console.log('================ 色号体系 ================\n')
+  const sysRep = verifyPaletteSystem(renderCase(cases[0], 909), cases[0])
+  console.log(`${sysRep.ok ? '✅ PASS' : '❌ FAIL'}  ${sysRep.name}`)
+  for (const l of sysRep.lines) console.log('    ' + l)
+  console.log('')
+  reports.push(sysRep)
 
   console.log('================ 拼块顺序 ================\n')
   const order = verifyRegionOrdering()

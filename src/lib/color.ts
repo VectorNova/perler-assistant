@@ -1,5 +1,6 @@
 import type { Lab, PaletteEntry, RGB } from '../types'
 import rawMapping from '../data/colorSystemMapping.json'
+import systemsData from '../data/paletteSystems.json'
 
 type RawMapping = Record<string, Record<string, string>>
 
@@ -361,6 +362,92 @@ export function codeOf(paletteIndex: number, brand: import('../types').Brand): s
   const k = entry.keys[brand]
   return k && k.length > 0 ? formatColorCode(k) : '?'
 }
+
+/* ------------------------------------------------------------------ */
+/* 色号体系（MARD 221 / 291）                                          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * MARD 的色号体系有「221 色」和「291 色」两套，后者是前者的扩展。
+ *
+ * 为什么这件事必须显式建模：用户报过「识别出原图根本没有的 P1、R8」。
+ * 查证后确认 —— MARD 221 = A–H + M 共 221 色；291 = 221 + P(23) Q(5) R(28)
+ * T(1) Y(5) ZG(8) 共 70 色的扩展。用户的图纸是 221 体系，而我们的色板是 291，
+ * 匹配不上时就会落到那 70 个**在那张图纸里根本不存在**的色号上。
+ *
+ * 数据源：github.com/HansBug/pindou-color-data（社区整理，非厂商官方发布；
+ * 该仓库的 mard-221 被评为「国内零售最常见版本」）。
+ * 已逐项验证：221 ⊂ 291，共享色号的 HEX 两套完全一致，差集恰为上述 70 个。
+ */
+export type PaletteSystemId = 'MARD221' | 'MARD291'
+
+export interface PaletteSystemOption {
+  id: PaletteSystemId
+  label: string
+  hint: string
+}
+
+export const PALETTE_SYSTEMS: readonly PaletteSystemOption[] = [
+  {
+    id: 'MARD221',
+    label: 'MARD 221 色',
+    hint: '国内零售最常见版本，色号只到 A–H 和 M。多数成品图纸用这套。',
+  },
+  {
+    id: 'MARD291',
+    label: 'MARD 291 色',
+    hint: '221 色的扩展版，另有 P / Q / R / T / Y / ZG 共 70 个色号。',
+  },
+]
+
+/** 每个色板条目是否属于 MARD 221。按色号判定，与色板顺序无关。 */
+const IN_MARD_221: Uint8Array = (() => {
+  const list: string[] = (systemsData as { '221'?: string[] })['221'] ?? []
+  const set = new Set(list.map((c) => formatColorCode(c)))
+  const flags = new Uint8Array(PALETTE.length)
+  PALETTE.forEach((entry, i) => {
+    const k = entry.keys.MARD
+    if (k && set.has(formatColorCode(k))) flags[i] = 1
+  })
+  return flags
+})()
+
+/** 某个色板条目是否属于选定的色号体系 */
+export function isInSystem(paletteIndex: number, system: PaletteSystemId): boolean {
+  return system === 'MARD221' ? IN_MARD_221[paletteIndex] === 1 : true
+}
+
+/** 选定体系下的全部色板下标 */
+export function indicesInSystem(system: PaletteSystemId): number[] {
+  const out: number[] = []
+  for (let i = 0; i < PALETTE.length; i++) if (isInSystem(i, system)) out.push(i)
+  return out
+}
+
+/** 该体系里的色号个数（用于界面提示） */
+export function systemSize(system: PaletteSystemId): number {
+  return system === 'MARD221' ? IN_MARD_221.reduce((a: number, b) => a + b, 0) : PALETTE.length
+}
+
+/**
+ * 把一份「图例色号」解析结果按选定体系过滤，并报出体系外的色号。
+ *
+ * 用户粘了图例却选了不对的体系时，这里会明确告诉他是哪些色号对不上，
+ * 而不是悄悄把它们丢掉 —— 这种矛盾必须让用户看见。
+ */
+export function intersectWithSystem(
+  indices: readonly number[],
+  system: PaletteSystemId,
+): { kept: number[]; outside: number[] } {
+  const kept: number[] = []
+  const outside: number[] = []
+  for (const i of indices) {
+    if (isInSystem(i, system)) kept.push(i)
+    else outside.push(i)
+  }
+  return { kept, outside }
+}
+
 
 /** 文字颜色：在给定底色上用黑还是白更清楚 */
 export function readableTextColor(rgb: RGB): string {

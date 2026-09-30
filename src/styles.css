@@ -944,6 +944,30 @@ input:focus {
   z-index: 2;
 }
 
+/* 分段控件（色号体系 221/291 这类二选一） */
+.seg-row {
+  display: flex;
+  gap: 6px;
+  margin: 6px 0 4px;
+}
+
+.btn.seg {
+  flex: 1;
+  padding: 7px 8px;
+  font-size: 13px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text-2);
+  border-radius: 8px;
+}
+
+.btn.seg.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel));
+}
+
 .tabs button {
   flex: 1;
   border: 0;

@@ -36,6 +36,13 @@ export interface ProjectSettings {
   /** 图纸图例色号原文（原样保留，方便下次继续编辑） */
   codeText: string
   allowedIndices: number[] | null
+  /**
+   * 色号体系。MARD 有 221 和 291 两套（291 是 221 的扩展，多出 P/Q/R/T/Y/ZG 共 70 色）。
+   * 图纸属于哪套必须跟着项目存 —— 否则重新识别时放错候选集，
+   * 又会冒出图纸里根本不存在的色号（用户报的 P1、R8 就是这个问题）。
+   * 可选是因为旧项目里没有这个字段，读到时按 221 兜底。
+   */
+  paletteSystem?: 'MARD221' | 'MARD291'
   treatBlankAsEmpty: boolean
   dimMode: DimMode
   showGrid: boolean

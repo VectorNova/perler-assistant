@@ -27,7 +27,8 @@ import {
 } from './lib/order'
 import { clampGrid, detectGrid, gridFromCellCount } from './lib/gridDetect'
 import { assetUrl } from './lib/assets'
-import { PALETTE, codeOf, resolveColorCodes } from './lib/color'
+import { PALETTE, PALETTE_SYSTEMS, codeOf, indicesInSystem, intersectWithSystem, resolveColorCodes } from './lib/color'
+import type { PaletteSystemId } from './lib/color'
 import {
   clearSession,
   decodeBitset,
@@ -149,6 +150,12 @@ export default function App() {
   const [codeText, setCodeText] = useState('')
   const [allowedIndices, setAllowedIndices] = useState<number[] | null>(null)
   /**
+   * 色号体系。默认 MARD 221（国内零售最常见），
+   * 这样识别结果**不可能**落到 P/Q/R/T/Y/ZG 这 70 个 221 体系里不存在的色号上。
+   * 用户报的「识别出原图没有的 P1、R8」就是没区分 221/291 造成的。
+   */
+  const [paletteSystem, setPaletteSystem] = useState<PaletteSystemId>('MARD221')
+  /**
    * 是否允许出现图例之外的颜色。默认关。
    * 打开后，与所有图例色号都差得较远的格子会回退到全色板 ——
    * 代价是**可能凭空造出图纸上没有的色号**（用户反馈的 P1/R8 就是这么来的），
@@ -244,6 +251,7 @@ export default function App() {
       excluded,
       codeText,
       allowedIndices,
+      paletteSystem,
       treatBlankAsEmpty,
       dimMode,
       showGrid,
@@ -441,6 +449,7 @@ export default function App() {
           imageUrl: '',
           imageHash: 'preview',
           dropBackground: true,
+          allowed: indicesInSystem(paletteSystem),
         })
         const counts = rawCounts(p)
         let blank = blankCount(p)
@@ -450,7 +459,7 @@ export default function App() {
       }
     }, 260)
     return () => clearTimeout(t)
-  }, [stage, grid, fileName])
+  }, [stage, grid, fileName, paletteSystem])
 
   const autoDetect = useCallback(() => {
     const imgData = imgDataRef.current
@@ -506,30 +515,49 @@ export default function App() {
       return
     }
     const allowed = indices.indices.length > 0 ? indices.indices : null
+    // 图例给出的是「这张图纸用到的色号」；色号体系给出的是「这套色号表里有哪些」。
+    // 两者取交集 —— 粘了图例却选了不对的体系时，明确报出哪些色号对不上。
+    let outsideSystem: string[] = []
+    let effective = allowed
+    if (allowed) {
+      const cut = intersectWithSystem(allowed, paletteSystem)
+      if (cut.kept.length > 0) {
+        effective = cut.kept
+        outsideSystem = cut.outside.map((i) => codeOf(i, brand))
+      }
+    }
     const hadProgress = done.size > 0
     const res = buildPattern(imgData, pattern.grid, {
       name: fileName,
       imageUrl: '',
       imageHash: imageHash || pattern.id,
       dropBackground: treatBlankAsEmpty,
-      allowed,
+      allowed: effective,
       allowForeignColors,
     })
     setPattern(res.pattern)
-    setAllowedIndices(allowed)
+    setAllowedIndices(effective)
     setDone(new Set())
     setHistory([])
     const parts: string[] = []
     parts.push(
       allowed
-        ? `已按「${brand}」把色板收窄到 ${allowed.length} 个候选色号`
-        : '已恢复使用全部 291 色',
+        ? `已按「${brand}」把色板收窄到 ${effective ? effective.length : 0} 个候选色号` +
+            `（色号体系 ${paletteSystem === 'MARD221' ? '221' : '291'}）`
+        : `已按色号体系 ${paletteSystem === 'MARD221' ? 'MARD 221' : 'MARD 291'} ` +
+            `收窄到 ${indicesInSystem(paletteSystem).length} 个候选色号`,
     )
+    if (outsideSystem.length > 0) {
+      parts.push(
+        `⚠ 这些色号不在当前色号体系里，已忽略：${outsideSystem.join(' ')}` +
+          `（图纸如果确实用到它们，说明它属于更全的那套体系，请把下面的「色号体系」改过去）`,
+      )
+    }
     if (indices.crossBrand.length > 0) {
       parts.push(`这些色号在「${brand}」里没有，按其它体系理解：${indices.crossBrand.join(' ')}`)
     }
     if (indices.unknown.length > 0) parts.push(`完全无法识别的色号：${indices.unknown.join(' ')}`)
-    if (allowed && res.unmatched > 0) {
+    if (effective && res.unmatched > 0) {
       parts.push(
         res.foreign > 0
           ? `有 ${res.unmatched} 格与候选色号都差得较远，其中 ${res.foreign} 格用了图例之外的颜色`
@@ -600,7 +628,10 @@ export default function App() {
             imageUrl: '',
             imageHash,
             dropBackground: true,
-            allowed: allowedIndices,
+            // 没粘图例时也不能放开到全色板：先按色号体系收窄。
+            // 用户报的「识别出原图没有的 P1、R8」正是这里放开了 291 色导致的 ——
+            // 他的图纸是 MARD 221，那 70 个扩展色号在图纸里根本不存在。
+            allowed: allowedIndices ?? indicesInSystem(paletteSystem),
           })
           setPattern(res.pattern)
           setDone(new Set())
@@ -1177,6 +1208,8 @@ export default function App() {
         setExcluded(new Set(s.excluded))
         setCodeText(s.codeText ?? '')
         setAllowedIndices(s.allowedIndices ?? null)
+        // 旧项目没有这个字段 → 按 221 兜底（零售最常见，也最保守：不会凭空造出扩展色号）
+        setPaletteSystem(s.paletteSystem === 'MARD291' ? 'MARD291' : 'MARD221')
         setTreatBlankAsEmpty(s.treatBlankAsEmpty)
         setDimMode(s.dimMode)
         setShowGrid(s.showGrid)
@@ -1640,6 +1673,16 @@ export default function App() {
         setCodeNote(null)
       }}
       allowForeignColors={allowForeignColors}
+      paletteSystem={paletteSystem}
+      paletteSystems={PALETTE_SYSTEMS}
+      onPaletteSystem={(id) => {
+        setPaletteSystem(id)
+        setCodeNote(
+          id === 'MARD221'
+            ? '已切到 MARD 221：候选色号只剩 A–H 和 M。识别不会再用到 P/Q/R/T/Y/ZG。'
+            : '已切到 MARD 291：候选色号含 P/Q/R/T/Y/ZG 扩展的 70 色。图纸本身要用到它们时才选这套。',
+        )
+      }}
       onAllowForeignColors={(v) => {
         setAllowForeignColors(v)
         setCodeNote(

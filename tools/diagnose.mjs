@@ -263,6 +263,12 @@ async function main() {
         console.log('颜色统计：', await cdp.eval(textOf('.panel-title .muted')))
         console.log('总豆子  ：', await cdp.eval(textOf('.color-row.total .count')))
         console.log(
+          '色号体系：',
+          await cdp.eval(
+            `[...document.querySelectorAll('.seg-row .btn')].map((b) => b.textContent.trim() + (b.classList.contains('active') ? '(选中)' : '')).join('  ')`,
+          ),
+        )
+        console.log(
           '识别出的色号：',
           await cdp.eval(
             `[...document.querySelectorAll('.color-rows .color-row')].map((r) => {
