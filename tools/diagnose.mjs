@@ -224,29 +224,52 @@ async function main() {
       // 可选：按图例色号约束色板后重新识别
       const codesIdx = process.argv.indexOf('--codes')
       const codes = codesIdx >= 0 ? process.argv[codesIdx + 1] : null
-      if (codes) {
-        await cdp.eval(clickByText('图纸', '.tabs button'))
-        await new Promise((r) => setTimeout(r, 500))
-        const filled = await cdp.eval(`(() => {
-          const ta = document.querySelector('.code-input');
-          if (!ta) return 'no-textarea';
-          const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
-          setter.call(ta, ${JSON.stringify(codes)});
-          ta.dispatchEvent(new Event('input', { bubbles: true }));
-          const btn = [...document.querySelectorAll('.btn-row button')].find((b) => b.textContent.includes('应用并重新识别'));
-          if (!btn) return 'no-button';
-          btn.click();
-          return 'ok';
-        })()`)
-        await new Promise((r) => setTimeout(r, 2500))
-        console.log(`\n=== 按图例色号约束色板（${filled}）===`)
+      const noBlank = process.argv.includes('--no-blank')
+      if (codes || noBlank) {
+        if (noBlank) {
+          // 「贴边空白当作不拼」在「显示」面板里（不是「图纸」）
+          await cdp.eval(clickByText('显示', '.tabs button'))
+          await new Promise((r) => setTimeout(r, 500))
+          const toggled = await cdp.eval(`(() => {
+            const labels = [...document.querySelectorAll('.settings .checkbox')];
+            const l = labels.find((x) => x.textContent.includes('贴边空白'));
+            if (!l) return 'no-checkbox';
+            const cb = l.querySelector('input');
+            const before = cb.checked;
+            if (before) cb.click();
+            return 'before=' + before + ' after=' + cb.checked;
+          })()`)
+          console.log('「贴边空白当作不拼」开关：', toggled)
+          await new Promise((r) => setTimeout(r, 1500))
+        }
+        if (codes) {
+          await cdp.eval(clickByText('图纸', '.tabs button'))
+          await new Promise((r) => setTimeout(r, 500))
+          const filled = await cdp.eval(`(() => {
+            const ta = document.querySelector('.code-input');
+            if (!ta) return 'no-textarea';
+            const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+            setter.call(ta, ${JSON.stringify(codes)});
+            ta.dispatchEvent(new Event('input', { bubbles: true }));
+            const btn = [...document.querySelectorAll('.btn-row button')].find((b) => b.textContent.includes('应用并重新识别'));
+            if (!btn) return 'no-button';
+            btn.click();
+            return 'ok';
+          })()`)
+          await new Promise((r) => setTimeout(r, 2500))
+          console.log(`\n=== 按图例色号约束色板（${filled}）===`)
+        }
         console.log('约束说明：', await cdp.eval(textOf('.detect-hint')))
         console.log('颜色统计：', await cdp.eval(textOf('.panel-title .muted')))
         console.log('总豆子  ：', await cdp.eval(textOf('.color-row.total .count')))
         console.log(
           '识别出的色号：',
           await cdp.eval(
-            `[...document.querySelectorAll('.color-rows .color-row .code')].map((e) => e.textContent.trim()).join(' ')`,
+            `[...document.querySelectorAll('.color-rows .color-row')].map((r) => {
+               const c = r.querySelector('.code')?.textContent?.trim() ?? '';
+               const n = r.querySelector('.count')?.textContent?.trim() ?? '';
+               return c + ':' + n;
+             }).join(' ')`,
           ),
         )
         await cdp.shot(`diagnose-${demo.replace(/\W+/g, '_')}-constrained.png`)
