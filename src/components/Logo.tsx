@@ -1,3 +1,5 @@
+import { assetUrl } from '../lib/assets'
+
 interface Props {
   /** 图标边长（px） */
   size?: number
@@ -16,7 +18,7 @@ interface Props {
 export default function Logo({ size = 26, showText = true, text = '拼豆辅助' }: Props) {
   return (
     <span className="logo">
-      <img className="logo-mark" src="/logo-96.png" alt="" width={size} height={size} />
+      <img className="logo-mark" src={assetUrl('logo-96.png')} alt="" width={size} height={size} />
       {showText && <span className="logo-text">{text}</span>}
     </span>
   )

@@ -26,6 +26,7 @@ import {
   regionPendingCells,
 } from './lib/order'
 import { clampGrid, detectGrid, gridFromCellCount } from './lib/gridDetect'
+import { assetUrl } from './lib/assets'
 import { PALETTE, codeOf, resolveColorCodes } from './lib/color'
 import {
   clearSession,
@@ -696,7 +697,7 @@ export default function App() {
     void (async () => {
       try {
         const file = name.includes('.') ? name : `${name}.png`
-        const res = await fetch(`/samples/${file}`)
+        const res = await fetch(assetUrl(`samples/${file}`))
         if (!res.ok) throw new Error(`找不到示例图纸：${file}`)
         const blob = await res.blob()
         await loadFile(new File([blob], `示例图纸-${file}`, { type: blob.type || 'image/png' }))

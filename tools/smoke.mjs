@@ -226,14 +226,22 @@ async function main() {
     )
     check('已声明 apple-touch-icon', brand.apple.includes('.png'), brand.apple)
 
-    // 文件本身必须真的能取到 —— 只声明不落地就是 404
+    // 文件本身必须真的能取到 —— 只声明不落地就是 404。
+    // 前缀从 manifest 的 href 推出来：本地是 "/"，GitHub Pages 子路径下是 "/perler-assistant/"，
+    // 不要写死绝对路径，否则子路径部署时这里会假失败。
+    const assetBase = await cdp.eval(`(() => {
+      const href = document.querySelector('link[rel="manifest"]')?.getAttribute('href') || '';
+      const i = href.lastIndexOf('manifest.webmanifest');
+      return i >= 0 ? href.slice(0, i) : '/';
+    })()`)
     const iconStatus = await cdp.eval(`(async () => {
-      const paths = ['/favicon.ico','/favicon-16.png','/favicon-32.png','/favicon-48.png',
-                     '/apple-touch-icon.png','/icon-192.png','/icon-512.png',
-                     '/icon-maskable-512.png','/logo-96.png','/manifest.webmanifest'];
+      const base = ${JSON.stringify(assetBase)};
+      const names = ['favicon.ico','favicon-16.png','favicon-32.png','favicon-48.png',
+                     'apple-touch-icon.png','icon-192.png','icon-512.png',
+                     'icon-maskable-512.png','logo-96.png','manifest.webmanifest'];
       const out = {};
-      for (const p of paths) {
-        try { const r = await fetch(p); out[p] = r.status; } catch { out[p] = 'err'; }
+      for (const n of names) {
+        try { const r = await fetch(base + n); out[n] = r.status; } catch { out[n] = 'err'; }
       }
       return out;
     })()`)
@@ -241,12 +249,14 @@ async function main() {
     check(
       '所有图标/清单文件都能取到',
       badIcons.length === 0,
-      badIcons.length ? JSON.stringify(badIcons) : `${Object.keys(iconStatus).length} 个全部 200`,
+      badIcons.length
+        ? JSON.stringify(badIcons)
+        : `${Object.keys(iconStatus).length} 个全部 200（前缀 "${assetBase}"）`,
     )
 
     // favicon.ico 的魔数：00 00 01 00（reserved + type=icon）
     const icoMagic = await cdp.eval(`(async () => {
-      const r = await fetch('/favicon.ico');
+      const r = await fetch(${JSON.stringify(assetBase)} + 'favicon.ico');
       const b = new Uint8Array(await r.arrayBuffer());
       return { len: b.length, magic: [b[0], b[1], b[2], b[3]].join(','), count: b[4] | (b[5] << 8) };
     })()`)

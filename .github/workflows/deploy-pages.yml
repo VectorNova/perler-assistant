@@ -1,0 +1,66 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# GitHub Pages 部署需要的权限（这个 token 是仓库自带的 GITHUB_TOKEN，和本地 PAT 无关）
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 同一时间只跑一个部署，新的推上来就取消排队中的旧的
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 构建
+        # 仓库页面的地址是 https://<user>.github.io/<repo>/，
+        # 所以 base 必须是 /<repo>/，否则资源会指向域名根目录而 404。
+        # 如果以后改成用户主页仓库（<user>.github.io），把这里改成 / 即可。
+        env:
+          BASE_PATH: /perler-assistant/
+        run: npm run build
+
+      - name: 检查产物（sw.js 和图标必须在）
+        run: |
+          set -e
+          for f in dist/index.html dist/sw.js dist/favicon.ico dist/icon-512.png dist/manifest.webmanifest; do
+            test -f "$f" || { echo "缺少 $f"; exit 1; }
+          done
+          echo "产物 OK，大小：$(du -sh dist | cut -f1)"
+
+      - uses: actions/configure-pages@v5
+        with:
+          # 仓库里还没开 Pages 时自动开启，省得手动点
+          enablement: true
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

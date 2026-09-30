@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ProjectStatus, ProjectSummary } from '../lib/projects'
+import { assetUrl } from '../lib/assets'
 import Logo from './Logo'
 
 interface Props {
@@ -82,7 +83,7 @@ export default function ProjectHome({
     void Promise.all(
       optional.map(async (d) => {
         try {
-          const r = await fetch(`/samples/${d.key}`, { method: 'HEAD' })
+          const r = await fetch(assetUrl(`samples/${d.key}`), { method: 'HEAD' })
           return [d.key, r.ok] as const
         } catch {
           return [d.key, false] as const
@@ -153,7 +154,7 @@ export default function ProjectHome({
       <div className="home-body">
         <section className="home-hero">
           <h1>
-            <img className="logo-mark" src="/logo-96.png" alt="" width={34} height={34} />
+            <img className="logo-mark" src={assetUrl('logo-96.png')} alt="" width={34} height={34} />
             拼豆辅助
           </h1>
           <p className="tagline">

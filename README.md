@@ -134,7 +134,30 @@ npm run preview      # http://127.0.0.1:4173
 
 ### 怎么在手机上打开
 
-**局域网直连**（最快，电脑要开着）：
+#### 方式一：静态托管 + PWA（推荐 —— 手机完全独立，不需要电脑）
+
+**https://vectornova.github.io/perler-assistant/**
+
+这是真正满足「去拼豆时不可能带电脑」的方案。关键不是「手机能一直连上服务器」，
+而是 **service worker**：
+
+1. 在家 WiFi 下打开一次，SW 会把整个 app（含图标和示例图纸，约 3.5 MB）预缓存到手机本地
+2. 浏览器菜单里选「**添加到主屏幕**」，得到一个带图标的独立入口
+3. 之后**飞行模式也能用** —— 去拼豆时不需要电脑、不需要网络
+
+> 之所以特别强调这点：`github.io` 在国内访问时常不稳。但离线方案下你只需要
+> **一次性连得上**，之后就完全走本地缓存，稳定性问题就绕开了。
+
+部署是自动的：`.github/workflows/deploy-pages.yml` 在每次 push 到 `main` 时构建并发布。
+仓库页面的地址是 `https://<user>.github.io/<repo>/`，所以构建时必须带 `BASE_PATH`：
+
+```bash
+BASE_PATH=/perler-assistant/ npm run build   # Windows: $env:BASE_PATH='/perler-assistant/'
+```
+
+不带 `BASE_PATH` 就是普通的根路径构建，本地 `npm run preview` 用。
+
+#### 方式二：局域网直连（临时调试用，需要电脑开着）
 
 ```bash
 npm run build
@@ -213,6 +236,9 @@ npm run icons        # = tools/make-icons.ps1 -Source "../图标.png"
 
 > 目前**还没有 service worker**，所以不是完整 PWA：能装到主屏幕、图标名字都对、
 > iOS 还能全屏，但**离线打不开**，Android 也不会弹安装横幅。要那些得补 SW（需要 HTTPS）。
+
+> 更新：**service worker 已经加上了**（见下面的「手机端」一节），
+> 上面这段是当时的状态，保留作记录。
 
 ### 3. 看清颜色分布
 - 左侧列出全部颜色：色块、色号、HEX、粒数、已拼进度。
