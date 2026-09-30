@@ -15,6 +15,8 @@ interface Props {
   allowedCount: number | null
   codeNote: string | null
   onClearCodes: () => void
+  allowForeignColors: boolean
+  onAllowForeignColors: (v: boolean) => void
 
   lowCount: number
   lowCursor: number
@@ -49,6 +51,8 @@ export default function PatternInfo({
   allowedCount,
   codeNote,
   onClearCodes,
+  allowForeignColors,
+  onAllowForeignColors,
   lowCount,
   lowCursor,
   onJumpLow,
@@ -99,6 +103,14 @@ export default function PatternInfo({
       </ul>
 
       <h3>按图纸图例约束色板</h3>
+      {allowedCount === null && colorCount > 50 && (
+        <div className="callout">
+          现在识别出 <b>{colorCount}</b> 种颜色。拼豆图纸通常只有 20~50 色，
+          多出来的一般是逐格采样的噪声（格内色号文字、格线、JPEG 压缩）——
+          而且色板里有 34 对颜色彼此 ΔE &lt; 2.5，噪声一抖就会换色号。
+          把图纸底部图例的色号粘进下面的框里，能大幅收敛（实测某图纸 116 色 → 32 色）。
+        </div>
+      )}
       <p className="hint small">
         图纸底部的色号表列出了这张图纸真正用到的颜色。把那些色号粘进来，
         匹配范围就从 291 色收窄到这些颜色，能明显减少「认成相邻色号」。
@@ -119,6 +131,20 @@ export default function PatternInfo({
           清空
         </button>
       </div>
+      <label className="checkbox">
+        <input
+          type="checkbox"
+          checked={allowForeignColors}
+          onChange={(e) => onAllowForeignColors(e.target.checked)}
+        />
+        允许图例之外的颜色
+      </label>
+      <p className="hint small">
+        默认关闭。关闭时，与所有图例色号都差得较远的格子也会归到最接近的那个图例色号 ——
+        因为「这张图纸只用图例里列出的颜色」是更可靠的先验。
+        打开后会回退到 291 色全色板，代价是<b>可能凭空造出图纸上根本没有的色号</b>
+        （实测用户反馈的 P1、R8 就是这么来的），只在确认图例抄漏了色号时才该开。
+      </p>
       {allowedCount !== null && (
         <div className="detect-hint">
           当前候选色板：{allowedCount} 色

@@ -567,6 +567,85 @@ function verifyCase(c: Case): Report {
   return { name: spec.name, ok, lines }
 }
 
+/* ----------------------------- 色板约束校验 ----------------------------- */
+
+/**
+ * 「给了图例就绝不能出现图例外的颜色」的回归测试。
+ *
+ * 用户报过：上传 MARD 图纸后识别出 P1、R8，而原图里根本没有这两个色号。
+ * 查下来是 buildPattern 里「超出容差就回退到全色板」那条路径凭空造出来的
+ * （R08 在色板里没有 ΔE<3 的近色，所以不可能是近色翻转）。
+ * 这里用一个极端的 allowed（只给一个很暗的颜色）把行为钉死：
+ *  - 关掉 allowForeignColors：所有格子只能落到那一个色号上
+ *  - 打开 allowForeignColors：会出现图例之外的颜色，且 foreign 计数 > 0
+ */
+function verifyStrictPalette(c: Case, spec: CaseSpec): Report {
+  const img = toImageData(c)
+  const grid: GridSpec = {
+    offsetX: c.originX,
+    offsetY: c.originY,
+    cellW: spec.cell,
+    cellH: spec.cell,
+    cols: spec.cols,
+    rows: spec.rows,
+  }
+
+  // 找一个「很暗」的色号当唯一的图例色 —— 和图纸里大部分浅色都差得很远，
+  // 保证一定有格子超出容差，从而真的走到那条分支
+  let darkIdx = 0
+  let darkLum = Infinity
+  PALETTE.forEach((p, i) => {
+    const lum = 0.299 * p.rgb[0] + 0.587 * p.rgb[1] + 0.114 * p.rgb[2]
+    if (lum < darkLum) {
+      darkLum = lum
+      darkIdx = i
+    }
+  })
+  const allowed = [darkIdx]
+  const code = PALETTE[darkIdx].keys.MARD
+
+  const base = {
+    name: 'strict',
+    imageUrl: '',
+    imageHash: 'strict',
+    dropBackground: false,
+    allowed,
+  }
+  const strict = buildPattern(img, grid, { ...base, allowForeignColors: false })
+  const loose = buildPattern(img, grid, { ...base, allowForeignColors: true })
+
+  const distinct = (p: { cells: Int16Array }) => {
+    const s = new Set<number>()
+    for (let i = 0; i < p.cells.length; i++) {
+      if (p.cells[i] !== EMPTY) s.add(p.cells[i])
+    }
+    return s
+  }
+
+  const strictSet = distinct(strict.pattern)
+  const looseSet = distinct(loose.pattern)
+  const strictOk = strictSet.size === 1 && strictSet.has(darkIdx)
+  const looseOk = loose.foreign > 0 && looseSet.size > 1
+  const strictNoForeign = strictSet.size === 1 && strict.foreign === 0
+
+  const lines = [
+    `唯一图例色号：${code} ${PALETTE[darkIdx].hex}（亮度最低的一个）`,
+    '',
+    `  关闭 allowForeignColors：出现 ${strictSet.size} 种颜色，foreign=${strict.foreign}，unmatched=${strict.unmatched}`,
+    `  打开 allowForeignColors：出现 ${looseSet.size} 种颜色，foreign=${loose.foreign}`,
+    '',
+    `判定：严格模式只出现图例里的颜色 ${strictOk ? 'OK' : '不达标'}` +
+      ` · 严格模式没有图例外的颜色 ${strictNoForeign ? 'OK' : '不达标'}` +
+      ` · 逃生开关确实会引入图例外的颜色 ${looseOk ? 'OK' : '不达标'}`,
+  ]
+
+  return {
+    name: '色板约束：给了图例就不出现图例外的颜色',
+    ok: strictOk && strictNoForeign && looseOk,
+    lines,
+  }
+}
+
 /* ----------------------------- 拼块顺序校验 ----------------------------- */
 
 /**
@@ -861,6 +940,13 @@ function main() {
     for (const l of r.lines) console.log('    ' + l)
     console.log('')
   }
+
+  console.log('================ 色板约束 ================\n')
+  const strictRep = verifyStrictPalette(renderCase(cases[0], 777), cases[0])
+  console.log(`${strictRep.ok ? '✅ PASS' : '❌ FAIL'}  ${strictRep.name}`)
+  for (const l of strictRep.lines) console.log('    ' + l)
+  console.log('')
+  reports.push(strictRep)
 
   console.log('================ 拼块顺序 ================\n')
   const order = verifyRegionOrdering()

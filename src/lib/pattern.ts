@@ -50,10 +50,22 @@ export interface BuildPatternOptions {
    * 按图纸图例把色板收窄到这些调色板下标。
    * 图纸底部的色号表列出了真正用到的颜色，收窄匹配范围能显著减少
    * 「认成相邻色号」的噪声（实测某实拍图纸 38 色的图纸会认成 116 色）。
-   * 若某格在候选集里的最近色差 > unmatchedTolerance，就回退到全色板。
    */
   allowed?: readonly number[] | null
+  /** 超出容差的格子数只用于提示，阈值本身不影响结果 */
   unmatchedTolerance?: number
+  /**
+   * 是否允许出现「图例之外」的颜色。
+   *
+   * 默认 false。原因：给了图例就代表「这张图纸只用这些颜色」，
+   * 而回退到全色板会**凭空造出图纸上没有的色号** ——
+   * 实测用户反馈「识别出了原图没有的 P1、R8」就是这么来的
+   * （R08 在色板里没有 ΔE<3 的近色，所以它不是近色翻转，只能是这条回退路径）。
+   * 打开这个开关只在「图例确实抄漏了几个色号」时才有意义。
+   */
+  allowForeignColors?: boolean
+  /** 关掉「同色区域统一取代表色」，退回逐格匹配（用于对比/排查） */
+  disableRegionConsistency?: boolean
 }
 
 export interface BuildPatternResult {
@@ -61,8 +73,133 @@ export interface BuildPatternResult {
   pageBg: RGB
   /** 被判为空格（背景）的格子数 */
   backgroundCells: number
-  /** 因超出容差而回退到全色板的格子数（说明图例可能不全或读错了） */
+  /** 最近图例色差仍超出容差的格子数（图例可能不全或读错，但结果仍取最近的图例色） */
   unmatched: number
+  /** 回退到了图例之外颜色的格子数（仅在 allowForeignColors 打开时可能非 0） */
+  foreign: number
+  /** 合并掉的同色区块数（区域一致性生效的证据） */
+  mergedRegions: number
+}
+
+/** 相邻格颜色接近到这个程度（LAB 欧氏距离 ΔE76）就认为属于同一片 */
+const CLUSTER_DE76 = 6
+
+/**
+ * 把「相邻且颜色接近」的格子并成连通块，返回每格所属块号 + 每块的代表色。
+ *
+ * 为什么需要：逐格采样必然带噪声（格内色号文字的笔画、格线、JPEG 压缩），
+ * 而调色板里有 **34 对颜色彼此 ΔE < 2.5**（实测 P01 #FCF7F8 与 H01 #FDFBFF 只差 1.95），
+ * 噪声一抖格子就换个色号 —— 表现就是「同一片本该同色的区域花掉」，
+ * 以及「识别出图纸上根本没有的颜色」。
+ *
+ * 用 LAB 欧氏距离（ΔE76）而不是 ΔE2000：聚类只需判断「够不够近」，
+ * ΔE76 快一个数量级，十几万次相邻比较时差别很明显。
+ *
+ * 代表色取「离块均值最近的那个格子的颜色」（medoid）而不是直接平均：
+ * 格内文字会把平均值拉偏，而 medoid 一定落在真实采样色上。
+ */
+function clusterByColor(
+  rgb: Uint8ClampedArray,
+  purity: Float32Array,
+  cols: number,
+  rows: number,
+): { comp: Int32Array; groups: number[][]; repRgb: RGB[] } {
+  const n = cols * rows
+  const lab = new Float64Array(n * 3)
+  const valid = new Uint8Array(n)
+  for (let i = 0; i < n; i++) {
+    if (purity[i] <= 0) continue
+    valid[i] = 1
+    const [L, a, b] = rgbToLab([rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2]])
+    lab[i * 3] = L
+    lab[i * 3 + 1] = a
+    lab[i * 3 + 2] = b
+  }
+
+  const thr2 = CLUSTER_DE76 * CLUSTER_DE76
+  const comp = new Int32Array(n).fill(-1)
+  const groups: number[][] = []
+  const repRgb: RGB[] = []
+  const stack: number[] = []
+
+  const close = (i: number, j: number): boolean => {
+    const dl = lab[i * 3] - lab[j * 3]
+    const da = lab[i * 3 + 1] - lab[j * 3 + 1]
+    const db = lab[i * 3 + 2] - lab[j * 3 + 2]
+    return dl * dl + da * da + db * db <= thr2
+  }
+
+  for (let seed = 0; seed < n; seed++) {
+    if (!valid[seed] || comp[seed] >= 0) continue
+    const id = groups.length
+    const members: number[] = []
+    stack.length = 0
+    stack.push(seed)
+    comp[seed] = id
+    while (stack.length > 0) {
+      const i = stack.pop() as number
+      members.push(i)
+      const r = (i / cols) | 0
+      const c = i - r * cols
+      if (c > 0) {
+        const j = i - 1
+        if (valid[j] && comp[j] < 0 && close(i, j)) {
+          comp[j] = id
+          stack.push(j)
+        }
+      }
+      if (c < cols - 1) {
+        const j = i + 1
+        if (valid[j] && comp[j] < 0 && close(i, j)) {
+          comp[j] = id
+          stack.push(j)
+        }
+      }
+      if (r > 0) {
+        const j = i - cols
+        if (valid[j] && comp[j] < 0 && close(i, j)) {
+          comp[j] = id
+          stack.push(j)
+        }
+      }
+      if (r < rows - 1) {
+        const j = i + cols
+        if (valid[j] && comp[j] < 0 && close(i, j)) {
+          comp[j] = id
+          stack.push(j)
+        }
+      }
+    }
+    groups.push(members)
+
+    // medoid：离块均值最近的那个格子
+    let mL = 0
+    let mA = 0
+    let mB = 0
+    for (const i of members) {
+      mL += lab[i * 3]
+      mA += lab[i * 3 + 1]
+      mB += lab[i * 3 + 2]
+    }
+    mL /= members.length
+    mA /= members.length
+    mB /= members.length
+    let best = members[0]
+    let bestD = Infinity
+    for (const i of members) {
+      const dl = lab[i * 3] - mL
+      const da = lab[i * 3 + 1] - mA
+      const db = lab[i * 3 + 2] - mB
+      const d = dl * dl + da * da + db * db
+      if (d < bestD) {
+        bestD = d
+        best = i
+      }
+    }
+    repRgb.push([rgb[best * 3], rgb[best * 3 + 1], rgb[best * 3 + 2]])
+  }
+
+  return { comp, groups, repRgb }
 }
 
 export function buildPattern(
@@ -84,31 +221,58 @@ export function buildPattern(
   // 受约束匹配要对大量格子重复求色差，按量化键缓存
   const constrainedCache = new Map<number, number>()
   let unmatched = 0
+  let foreign = 0
 
   for (let i = 0; i < n; i++) {
-    if (purity[i] <= 0) {
-      cells[i] = EMPTY
-      continue
-    }
-    const c: RGB = [rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2]]
-    if (allowed) {
-      const key = ((c[0] >> 2) << 12) | ((c[1] >> 2) << 6) | (c[2] >> 2)
-      let use = constrainedCache.get(key)
-      if (use === undefined) {
-        const near = nearestAmongWithDistance(c, allowed)
-        use = near.index
-        if (!Number.isFinite(near.delta) || near.delta > unmatchedTol || use >= PALETTE.length) {
-          use = nearestPaletteIndex(c)
-          unmatched++
-        }
-        constrainedCache.set(key, use)
+    if (purity[i] <= 0) cells[i] = EMPTY
+  }
+
+  /**
+   * 把一个颜色映射到色号。
+   * allowed 存在时只在这个集合里挑 —— 除非显式打开 allowForeignColors。
+   */
+  const mapColor = (c: RGB): number => {
+    if (!allowed) return nearestPaletteIndex(c)
+    const key = ((c[0] >> 2) << 12) | ((c[1] >> 2) << 6) | (c[2] >> 2)
+    const hit = constrainedCache.get(key)
+    if (hit !== undefined) return hit
+    const near = nearestAmongWithDistance(c, allowed)
+    let use = near.index
+    if (!Number.isFinite(near.delta) || use >= PALETTE.length) use = nearestPaletteIndex(c)
+    if (near.delta > unmatchedTol) {
+      unmatched++
+      if (opts.allowForeignColors) {
+        use = nearestPaletteIndex(c)
+        foreign++
       }
-      cells[i] = use
-    } else {
-      cells[i] = nearestPaletteIndex(c)
+      // 默认不回退：图例是这张图纸的权威，硬塞一个图例外的色号
+      // 就等于凭空造出图纸上没有的颜色（用户反馈的 P1/R8 就是这么来的）
     }
-    if (opts.dropBackground && deltaE2000(rgbToLab(c), bgLab) <= tol) {
-      bgLike[i] = 1
+    constrainedCache.set(key, use)
+    return use
+  }
+
+  let mergedRegions = 0
+  if (opts.disableRegionConsistency) {
+    for (let i = 0; i < n; i++) {
+      if (purity[i] <= 0) continue
+      cells[i] = mapColor([rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2]])
+    }
+  } else {
+    // 先按颜色并成块，再整块用一个色号 —— 区域内部的随机翻转就消失了
+    const { groups, repRgb } = clusterByColor(rgb, purity, grid.cols, grid.rows)
+    for (let k = 0; k < groups.length; k++) {
+      const idx = mapColor(repRgb[k])
+      for (const i of groups[k]) cells[i] = idx
+    }
+    mergedRegions = groups.length
+  }
+
+  if (opts.dropBackground) {
+    for (let i = 0; i < n; i++) {
+      if (purity[i] <= 0) continue
+      const c: RGB = [rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2]]
+      if (deltaE2000(rgbToLab(c), bgLab) <= tol) bgLike[i] = 1
     }
   }
 
@@ -137,7 +301,7 @@ export function buildPattern(
     createdAt: Date.now(),
   }
 
-  return { pattern, pageBg, backgroundCells, unmatched }
+  return { pattern, pageBg, backgroundCells, unmatched, foreign, mergedRegions }
 }
 
 /**

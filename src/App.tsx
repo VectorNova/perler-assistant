@@ -148,6 +148,13 @@ export default function App() {
   /** 图纸图例里的色号（用来把色板收窄到这张图纸真正用到的颜色） */
   const [codeText, setCodeText] = useState('')
   const [allowedIndices, setAllowedIndices] = useState<number[] | null>(null)
+  /**
+   * 是否允许出现图例之外的颜色。默认关。
+   * 打开后，与所有图例色号都差得较远的格子会回退到全色板 ——
+   * 代价是**可能凭空造出图纸上没有的色号**（用户反馈的 P1/R8 就是这么来的），
+   * 所以只在确认图例抄漏了色号时才该开。
+   */
+  const [allowForeignColors, setAllowForeignColors] = useState(false)
   const [codeNote, setCodeNote] = useState<string | null>(null)
   const [focusOnColor, setFocusOnColor] = useState(false)
 
@@ -506,6 +513,7 @@ export default function App() {
       imageHash: imageHash || pattern.id,
       dropBackground: treatBlankAsEmpty,
       allowed,
+      allowForeignColors,
     })
     setPattern(res.pattern)
     setAllowedIndices(allowed)
@@ -522,7 +530,12 @@ export default function App() {
     }
     if (indices.unknown.length > 0) parts.push(`完全无法识别的色号：${indices.unknown.join(' ')}`)
     if (allowed && res.unmatched > 0) {
-      parts.push(`有 ${res.unmatched} 格与候选色号都差得较远，已回退到全色板（图例可能不全）`)
+      parts.push(
+        res.foreign > 0
+          ? `有 ${res.unmatched} 格与候选色号都差得较远，其中 ${res.foreign} 格用了图例之外的颜色`
+          : `有 ${res.unmatched} 格与候选色号都差得较远，已按最接近的图例色号处理` +
+            `（若图例确实抄漏了色号，勾选下面的「允许图例之外的颜色」）`,
+      )
     }
     if (hadProgress) parts.push('重新识别会改变逐格颜色，已清空拼豆进度')
     setCodeNote(parts.join('；'))
@@ -1625,6 +1638,15 @@ export default function App() {
       onClearCodes={() => {
         setCodeText('')
         setCodeNote(null)
+      }}
+      allowForeignColors={allowForeignColors}
+      onAllowForeignColors={(v) => {
+        setAllowForeignColors(v)
+        setCodeNote(
+          v
+            ? '已允许图例之外的颜色：与图例都差得较远的格子会回退到 291 色全色板，可能造出图纸上没有的色号。'
+            : '已改为严格使用图例色号：与图例都差得较远的格子会归到最接近的那个。',
+        )
       }}
       lowCount={lowCells.length}
       lowCursor={lowCursor}

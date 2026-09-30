@@ -243,6 +243,12 @@ async function main() {
         console.log('约束说明：', await cdp.eval(textOf('.detect-hint')))
         console.log('颜色统计：', await cdp.eval(textOf('.panel-title .muted')))
         console.log('总豆子  ：', await cdp.eval(textOf('.color-row.total .count')))
+        console.log(
+          '识别出的色号：',
+          await cdp.eval(
+            `[...document.querySelectorAll('.color-rows .color-row .code')].map((e) => e.textContent.trim()).join(' ')`,
+          ),
+        )
         await cdp.shot(`diagnose-${demo.replace(/\W+/g, '_')}-constrained.png`)
 
         /* ---- 项目往返：回首页再打开，参数与进度必须原样恢复 ---- */
