@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- viewport-fit=cover 是 env(safe-area-inset-*) 生效的前提，手机端底部抽屉要用 -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>拼豆辅助 · 图纸识别与拼装指引</title>
+    <meta
+      name="description"
+      content="上传现成的拼豆图纸，自动识别网格与色号分布，再按颜色分块指引你拼完。数据只存在本机浏览器里。"
+    />
+
+    <!-- 图标由 tools/make-icons.ps1 从原图生成 -->
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="theme-color" content="#2563eb" />
+
+    <!-- iOS 加到主屏幕后全屏显示（不需要 service worker 就生效） -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="拼豆辅助" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

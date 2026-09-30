@@ -1,0 +1,15 @@
+# 统一用 LF。核心代码是跨平台的（Node + 浏览器），
+# 而且 tools/make-icons.ps1 这类脚本混进 CRLF 容易出意外。
+* text=auto eol=lf
+
+# 二进制：别做换行转换、别尝试 diff
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.webp binary
+*.gif binary
+
+# Windows 批处理必须 CRLF，否则某些情况下会执行异常
+*.bat text eol=crlf
+*.cmd text eol=crlf

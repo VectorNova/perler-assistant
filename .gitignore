@@ -1,0 +1,17 @@
+node_modules
+dist
+.vite
+*.tsbuildinfo
+*.log
+.DS_Store
+
+# 我的截图（tools/*.mjs 跑出来的，不进仓库）
+_shots/
+
+# verify 在项目根目录生成的测试图纸 —— 和 public/samples/*.png 内容重复。
+# 前面必须加 /：裸写 samples/ 会连 public/samples/ 一起忽略掉。
+/samples/
+
+# 作者自己的实拍图纸：第三方同人图，不进公开仓库。
+# 本地保留即可，首页会自动隐藏「104×104 实拍图纸」那个示例按钮。
+public/samples/user.jpg

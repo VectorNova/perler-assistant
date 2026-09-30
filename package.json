@@ -1,0 +1,30 @@
+{
+  "name": "perler-assistant",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "拼豆辅助 — 上传现成拼豆图纸，识别颜色分布，按颜色逐个指引拼装",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview --port 4173 --host 127.0.0.1 --strictPort",
+    "preview:lan": "vite preview --port 4173 --host 0.0.0.0 --strictPort",
+    "verify": "node tools/run-verify.mjs",
+    "smoke": "node tools/smoke.mjs",
+    "mobile": "node tools/mobile.mjs",
+    "bench": "node tools/bench.mjs",
+    "icons": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/make-icons.ps1 -Source \"../图标.png\"",
+    "test": "npm run build && npm run verify"
+  },
+  "dependencies": {
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@vitejs/plugin-react": "^4.4.1",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.5"
+  }
+}
