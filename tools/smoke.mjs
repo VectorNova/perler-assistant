@@ -268,6 +268,48 @@ async function main() {
 
     await cdp.shot('smoke-1-browse.png')
 
+    /* ---- 1c. service worker：离线能力的命脉 ---- */
+    const swInfo = await cdp.eval(`(async () => {
+      if (!('serviceWorker' in navigator)) return { supported: false };
+      let reg = null;
+      try {
+        reg = await Promise.race([
+          navigator.serviceWorker.ready,
+          new Promise((_, rj) => setTimeout(() => rj(new Error('timeout')), 25000)),
+        ]);
+      } catch {
+        return { supported: true, ready: false };
+      }
+      // ready 之后 controller 可能还没接管，等一小会儿
+      for (let i = 0; i < 60 && !navigator.serviceWorker.controller; i++) {
+        await new Promise((r) => setTimeout(r, 150));
+      }
+      const names = await caches.keys();
+      let count = 0;
+      let hasIndex = false;
+      if (names.length) {
+        const keys = await (await caches.open(names[0])).keys();
+        count = keys.length;
+        hasIndex = keys.some((k) => new URL(k.url).pathname.endsWith('/index.html'));
+      }
+      return {
+        supported: true,
+        ready: true,
+        scope: reg.scope,
+        controlled: !!navigator.serviceWorker.controller,
+        caches: names,
+        count,
+        hasIndex,
+      };
+    })()`)
+    check(
+      'service worker 已注册并预缓存了资源（离线可用）',
+      swInfo.supported && swInfo.ready && swInfo.controlled && swInfo.count > 5 && swInfo.hasIndex,
+      swInfo.supported
+        ? `缓存 ${swInfo.caches?.join(',') || '(无)'} 共 ${swInfo.count} 个，含 index.html=${swInfo.hasIndex}，controlled=${swInfo.controlled}`
+        : '浏览器不支持',
+    )
+
     /* ---- 2. 点击某个颜色 → 高亮它的分布 ---- */
     const beforeActive = await cdp.eval(
       `document.querySelector('.color-row.active .code')?.textContent?.trim() ?? ''`,
