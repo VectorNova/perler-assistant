@@ -115,6 +115,69 @@ console.log(
   `  ${pairs.length} 对近色意味着：这些格子的识别结果是「掷硬币」的，` +
     `噪声一抖就会换色号 ——\n  这正是「图纸上没有 P1/R8 却出现」的机制之一。`,
 )
+
+// 区域一致性的合并阈值会波及多少对颜色？
+// 这个数字直接决定「会不会把两个真实存在的相近色号错误合并」的风险。
+const CLUSTER_DE76 = 6
+const toLab = (i) => PALETTE[i].lab
+const de76 = (i, j) => {
+  const a = toLab(i)
+  const b = toLab(j)
+  return Math.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2)
+}
+console.log(`\n=== 区域一致性阈值选多少：扫一遍 ===`)
+console.log('  阈值   波及对数   ΔE2000 对应约值   说明')
+for (const t of [2, 3, 4, 5, 6, 8]) {
+  let cnt = 0
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      const d = de76(i, j)
+      if (d <= t) {
+        cnt++
+        void d
+      }
+    }
+  }
+  // 顺带给出该阈值下「最紧的一对」与「最松的一对」的 ΔE2000，便于理解量级
+  let lo = Infinity
+  let hi = 0
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      if (de76(i, j) <= t) {
+        const d2 = deltaE2000(PALETTE[i].lab, PALETTE[j].lab)
+        if (d2 < lo) lo = d2
+        if (d2 > hi) hi = d2
+      }
+    }
+  }
+  const note =
+    t === 3
+      ? '← 只覆盖「几乎完全同色」的（含 P01↔H01 的 ΔE76 2.22），合并风险最小'
+      : t === 6
+        ? '← 当前实现用的值，抑制最强但合并风险最大'
+        : ''
+  console.log(
+    `  ΔE76 ≤ ${String(t).padEnd(3)} ${String(cnt).padStart(8)}   ${lo.toFixed(1)} ~ ${hi.toFixed(1)}`.padEnd(
+      56,
+    ) + note,
+  )
+}
+
+const merged = []
+for (let i = 0; i < n; i++) {
+  for (let j = i + 1; j < n; j++) {
+    const d = de76(i, j)
+    if (d <= CLUSTER_DE76) merged.push({ i, j, d })
+  }
+}
+console.log(`\n=== 当前阈值 ΔE76 ≤ ${CLUSTER_DE76} 波及的 ${merged.length} 对（前 12）===`)
+console.log('  阈值内的一对如果同时出现在图纸上，会被合并成一个色号 —— 这是已知取舍')
+merged.sort((a, b) => a.d - b.d)
+for (const m of merged.slice(0, 12)) {
+  console.log(
+    `  ΔE76 ${m.d.toFixed(2)}  ${mard(m.i).padEnd(4)} ${hex(m.i)}  ↔  ${mard(m.j).padEnd(4)} ${hex(m.j)}`,
+  )
+}
 writeFileSync(
   path.resolve('_shots/palette-audit.txt'),
   pairs.map((p) => `${p.d.toFixed(3)}\t${mard(p.i)}\t${hex(p.i)}\t${mard(p.j)}\t${hex(p.j)}`).join('\n'),
