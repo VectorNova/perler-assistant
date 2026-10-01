@@ -214,13 +214,83 @@ async function main() {
         });
       }
 
-      // 3) 全图统计（为后续聚类做准备）
+      // 3) 全图统计
       const all = window.__glyph.extractGlyphs(data, grid);
       const charCount = {};
       for (const cell of all.cells) {
         const k = cell.chars.length;
         charCount[k] = (charCount[k] ?? 0) + 1;
       }
+
+      // 3b) 聚类（只保留有文字的格子）
+      const cells = all.cells.filter((c) => c.chars.length > 0);
+      const tClu = performance.now();
+      const cluster = window.__glyph.clusterChars(cells, 9);
+      const msCluster = performance.now() - tClu;
+
+      // 3c) 按颜色组约束求解：同色同码（实测 100% 成立），组数远小于格数，候选可以放宽
+      const tLab = performance.now();
+      const pool = window.__glyph.indicesInSystem('MARD221');
+      const scoredPool = pool.map((i) => ({ i, code: window.__glyph.codeOf(i, 'MARD') }));
+      const byFill = new Map();
+      cluster.refs.forEach((r, idx) => {
+        const cell = cells[r.cell];
+        const key = window.__glyph.fillHex(cell);
+        let g = byFill.get(key);
+        if (!g) { g = { fill: key, rgb: cell.fill, seqs: new Map() }; byFill.set(key, g); }
+        if (!g.seqs.has(r.cell)) g.seqs.set(r.cell, []);
+        g.seqs.get(r.cell)[r.pos] = cluster.assign[idx];
+      });
+      const groups = [];
+      let sameSeqGroups = 0;
+      for (const g of byFill.values()) {
+        const tally = new Map();
+        for (const seq of g.seqs.values()) {
+          const k = seq.join(',');
+          tally.set(k, (tally.get(k) ?? 0) + 1);
+        }
+        if (tally.size === 1) sameSeqGroups++;
+        let best = '', bestN = -1;
+        for (const [k, n] of tally) if (n > bestN) { bestN = n; best = k; }
+        const seq = best === '' ? [] : best.split(',').map(Number);
+        const cands = scoredPool
+          .filter((s) => s.code.length === seq.length)
+          .map((s) => {
+            const p = window.__glyph.PALETTE[s.i];
+            const d = Math.sqrt(
+              (g.rgb[0] - p.rgb[0]) ** 2 + (g.rgb[1] - p.rgb[1]) ** 2 + (g.rgb[2] - p.rgb[2]) ** 2
+            );
+            return { code: s.code, d };
+          })
+          .sort((a, b) => a.d - b.d)
+          .map((s) => s.code);
+        groups.push({ fill: g.fill, n: g.seqs.size, seq, candidates: cands, top: cands[0] ?? '?' });
+      }
+      const vocab = pool.map((i) => window.__glyph.codeOf(i, 'MARD'));
+      const label = window.__glyph.solveGroups(groups, cluster.classes.length, {
+        vocab,
+        prefer: groups.map((g) => g.top),
+      });
+      const msLabel = performance.now() - tLab;
+
+      // 5) 自检：同一填色的格子是否都被读成同一个色号
+      const groupCode = new Map();
+      groups.forEach((g, i) => groupCode.set(g.fill, label.codeOfGroup[i]));
+      const byFillCheck = {};
+      cells.forEach((c) => {
+        const k = window.__glyph.fillHex(c);
+        if (!byFillCheck[k]) byFillCheck[k] = { n: 0, codes: {} };
+        byFillCheck[k].n++;
+        const code = groupCode.has(k) ? groupCode.get(k) : null;
+        const key = code === null ? '(未读出)' : code;
+        byFillCheck[k].codes[key] = (byFillCheck[k].codes[key] ?? 0) + 1;
+      });
+      const fillSummary = Object.entries(byFillCheck)
+        .map(([fill, v]) => {
+          const top = Object.entries(v.codes).sort((a, b) => b[1] - a[1]);
+          return { fill, n: v.n, distinct: top.length, top: top[0][0], topN: top[0][1], all: top.slice(0, 4) };
+        })
+        .sort((a, b) => b.n - a.n);
 
       // 4) 调试图：网格叠加 + 抽样格子的放大裁剪
       const c1 = document.createElement('canvas');
@@ -260,6 +330,13 @@ async function main() {
                            offsetY: Number(grid.offsetY.toFixed(1)) },
         samples, charCount,
         withText: all.withText, totalChars: all.totalChars, cells: all.cells.length,
+        msCluster: Math.round(msCluster), msLabel: Math.round(msLabel),
+        classes: cluster.classes.map((c) => ({ id: c.id, count: c.count, text: window.__glyph.classToText(c.bits) })),
+        charOf: label.charOf,
+        stats: label.stats,
+        sameSeqGroups,
+        groups: groups.map((g, i) => ({ fill: g.fill, n: g.n, top: g.top, code: label.codeOfGroup[i], compat: label.compatibleCount[i], seq: g.seq.join('') })),
+        fillSummary,
         sheet: sheet.toDataURL('image/png'),
       };
     })()`)
@@ -270,7 +347,54 @@ async function main() {
     console.log(`格子总数 ${out.cells}   有文字 ${out.withText}   切出字符 ${out.totalChars}`)
     console.log(`每格字符数分布：${JSON.stringify(out.charCount)}`)
 
-    console.log(`\n=== 抽样 14 格的切分结果 ===`)
+    console.log(`\n=== 聚类 ===`)
+    console.log(`字形类 ${out.classes.length} 个（耗时 ${out.msCluster}ms）`)
+    console.log(`贴标签 ${out.msLabel}ms`)
+    console.log(`统计：类 ${out.stats.classes} 个，解出 ${out.stats.labeledClasses} 个；` +
+      `格子 ${out.stats.cellsTotal}，读出 ${out.stats.cellsRead}` +
+      `（${((out.stats.cellsRead / Math.max(1, out.stats.cellsTotal)) * 100).toFixed(1)}%）；` +
+      `与颜色先验不一致 ${out.stats.disagreedWithColor}；矛盾 ${out.stats.conflicted}`)
+
+    console.log(`\n=== 按颜色组求解 ===`)
+    console.log(`颜色组 ${out.stats.groups} 个：解出 ${out.stats.groupsResolved} 个，` +
+      `覆盖 ${out.stats.cellsCovered}/${out.stats.cellsTotal} 格 ` +
+      `(${((out.stats.cellsCovered / Math.max(1, out.stats.cellsTotal)) * 100).toFixed(1)}%)；` +
+      `候选全不相容 ${out.stats.deadEnds} 组`)
+    console.log(`「同色同码」自检：${out.sameSeqGroups}/${out.stats.groups} 个颜色组的字形序列完全一致`)
+    console.log(`\n  颜色组明细（按格数排序，前 30）`)
+    console.log(`  填色       格数   序列     颜色先验首选   读出色号   相容候选数`)
+    for (const g of out.groups.slice(0, 30).sort((a, b) => b.n - a.n)) {
+      const mark = g.code ? (g.code === g.top ? ' ' : '*') : '?'
+      console.log(`  ${g.fill}  ${String(g.n).padStart(5)}  [${String(g.seq).padStart(5)}]   ${String(g.top).padEnd(6)}      ${String(g.code ?? '未读出').padEnd(6)}  ${String(g.compat).padStart(4)} ${mark}`)
+    }
+    console.log(`\n=== 解出的字符表（类号 → 字符）===`)
+    console.log('  ' + out.charOf.map((c, i) => `${i}:${c ?? '?'}`).join('  '))
+
+    console.log(`\n=== 字形类（按出现次数排序，前 24 个）===`)
+    const showN = 24
+    const cols = 6
+    for (let row = 0; row < Math.ceil(Math.min(showN, out.classes.length) / cols); row++) {
+      const slice = out.classes.slice(row * cols, row * cols + cols)
+      console.log('   ' + slice.map((c) => `#${String(c.id).padStart(2)} x${String(c.count).padEnd(5)}  ${c.text[0]}`).join(' | '))
+      for (let y = 1; y < slice[0].text.length; y++) {
+        console.log('   ' + slice.map((c) => `         ${c.text[y]} `).join(' | '))
+      }
+      console.log('')
+    }
+
+    console.log(`=== 自检：同一填色是否读成同一色号（前 16 种填色）===`)
+    let consistent = 0
+    let inconsistent = 0
+    for (const f of out.fillSummary) {
+      const ok = f.distinct === 1
+      if (ok) consistent++
+      else inconsistent++
+    }
+    console.log(`  填色种类 ${out.fillSummary.length}：一致的 ${consistent}，不一致的 ${inconsistent}`)
+    for (const f of out.fillSummary.slice(0, 16)) {
+      const mark = f.distinct === 1 ? '✓' : '✗'
+      console.log(`  ${mark} ${f.fill} ×${String(f.n).padEnd(5)} → ${f.all.map(([c, n]) => `${c}×${n}`).join('  ')}`)
+    }
     for (const s of out.samples) {
       console.log(`\n  [${s.col},${s.row}]  填色 ${s.fill}  墨占比 ${s.inkRatio}  切出 ${s.nChars} 字`)
       if (s.texts.length === 0) {
