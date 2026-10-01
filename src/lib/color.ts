@@ -178,20 +178,34 @@ export const HEX_TO_INDEX = new Map<string, number>(
 
 const exactCache = new Map<number, number>()
 
-function quantKey(rgb: RGB): number {
-  return ((rgb[0] >> 3) << 10) | ((rgb[1] >> 3) << 5) | (rgb[2] >> 3)
+/**
+ * 颜色缓存的键：**完整 24 位**，一一对应。
+ *
+ * 绝不能量化分桶 —— 原来是 5 位/通道（32 级），桶内所有颜色共用首次算出的答案。
+ * 实测色板里有 **12 对**颜色正好同桶（例如 G15 #FCF9E0 与 H21 #FFFBE1
+ * 键都是 (31,31,28)），于是出现「同一张图、处理顺序不同、结果不同」：
+ * 先遇到哪个颜色，整桶就都算成它。这是可复现性问题 ——
+ * 留着它，后面所有调试结论都不可信。
+ *
+ * 用 24 位之后缓存只在颜色**完全相同**时命中。因为 sampleCells 取的是众数，
+ * 同一片平坦区域各格颜色本来就逐位相同，命中率依然很高（实测无性能退化）。
+ *
+ * 与 pattern.ts 的受约束匹配共用这一个函数，避免两处再各写一份量化逻辑。
+ */
+export function colorCacheKey(rgb: RGB): number {
+  return (rgb[0] << 16) | (rgb[1] << 8) | rgb[2]
 }
 
 /**
  * 找到最接近的调色板颜色下标。
  * 1) 先试精确 hex 命中（图纸导出通常是纯色，命中率极高）
- * 2) 否则用 CIEDE2000 在 LAB 空间找最近色，并按量化键缓存结果
+ * 2) 否则用 CIEDE2000 在 LAB 空间找最近色，并按**完整颜色**缓存结果
  */
 export function nearestPaletteIndex(rgb: RGB): number {
   const exact = HEX_TO_INDEX.get(rgbToHex(rgb))
   if (exact !== undefined) return exact
 
-  const key = quantKey(rgb)
+  const key = colorCacheKey(rgb)
   const cached = exactCache.get(key)
   if (cached !== undefined) return cached
 

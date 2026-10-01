@@ -73,7 +73,7 @@ class CDP {
         try {
           dump = await this.eval(
             `JSON.stringify({
-              stage: document.querySelector('.workspace') ? 'work'
+              stage: document.querySelector('.workspace, .m-workspace') ? 'work'
                    : document.querySelector('.calibrate') ? 'calibrate'
                    : document.querySelector('.home') ? 'home' : '?',
               url: location.href,
@@ -165,7 +165,7 @@ async function main() {
       await new Promise((r) => setTimeout(r, 400))
       const t0 = Date.now()
       await cdp.eval(clickIn('button', '开始识别图纸'))
-      await cdp.waitFor(`!!document.querySelector('.workspace')`, 300000, '工作台')
+      await cdp.waitFor(`!!document.querySelector('.workspace, .m-workspace')`, 300000, '工作台')
       const autoMs = Date.now() - t0
       const autoInfo = await cdp.eval(
         `document.querySelector('.topbar .muted, .panel-title .muted')?.textContent?.trim() ?? ''`,
@@ -182,7 +182,7 @@ async function main() {
       await cdp.eval(clickIn('button', '按格数重算'))
       await new Promise((r) => setTimeout(r, 800))
       await cdp.eval(clickIn('button', '开始识别图纸'))
-      await cdp.waitFor(`!!document.querySelector('.workspace')`, 300000, '工作台')
+      await cdp.waitFor(`!!document.querySelector('.workspace, .m-workspace')`, 300000, '工作台')
       const cellsMs = Date.now() - t1
 
       console.log(
@@ -195,11 +195,11 @@ async function main() {
 
     // 移动端布局体检：工作台三栏在手机宽度下会不会溢出
     await cdp.send('Page.navigate', { url: `${BASE}/?demo=a&auto=1` })
-    await cdp.waitFor(`!!document.querySelector('.workspace')`, 300000, '工作台')
+    await cdp.waitFor(`!!document.querySelector('.workspace, .m-workspace')`, 300000, '工作台')
     await new Promise((r) => setTimeout(r, 800))
     const layout = await cdp.eval(`(() => {
       const de = document.documentElement;
-      const ws = document.querySelector('.workspace');
+      const ws = document.querySelector('.workspace, .m-workspace');
       const stage = document.querySelector('.stage');
       const L = document.querySelector('.panel.side.left');
       const R = document.querySelector('.panel.side.right');

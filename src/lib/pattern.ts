@@ -1,6 +1,7 @@
 import { EMPTY, type GridSpec, type Pattern, type Plan, type RGB } from '../types'
 import {
   PALETTE,
+  colorCacheKey,
   deltaE2000,
   nearestAmong,
   nearestAmongWithDistance,
@@ -243,10 +244,15 @@ export function buildPattern(
   /**
    * 把一个颜色映射到色号。
    * allowed 存在时只在这个集合里挑 —— 除非显式打开 allowForeignColors。
+   *
+   * 缓存键用 colorCacheKey（完整 24 位），不能量化分桶：
+   * 原来按 6 位/通道分桶时桶内所有颜色共用首次算出的答案，而实测色板里有
+   * 3 对颜色正好同桶（G15 #FCF9E0 / H21 #FFFBE1、H2 #FEFFFF / T1 #FFFFFF、Q4 / R11），
+   * 于是同一种输入、处理顺序不同就得到不同色号 —— 可复现性问题。
    */
   const mapColor = (c: RGB): number => {
     if (!allowed) return nearestPaletteIndex(c)
-    const key = ((c[0] >> 2) << 12) | ((c[1] >> 2) << 6) | (c[2] >> 2)
+    const key = colorCacheKey(c)
     const hit = constrainedCache.get(key)
     if (hit !== undefined) return hit
     const near = nearestAmongWithDistance(c, allowed)

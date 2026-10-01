@@ -8,7 +8,7 @@ import { PALETTE, deltaE2000, rgbToLab } from '../src/lib/color'
 import { detectGrid, estimatePageBackground, debugProfiles } from '../src/lib/gridDetect'
 import { buildPattern, derivePlan, rawCounts } from '../src/lib/pattern'
 import { buildRegions, buildSteps } from '../src/lib/order'
-import { PALETTE, codeOf, formatColorCode, indicesInSystem, resolveColorCodes } from '../src/lib/color'
+import { PALETTE, codeOf, colorCacheKey, formatColorCode, indicesInSystem, nearestPaletteIndex, resolveColorCodes } from '../src/lib/color'
 import { EMPTY, type GridSpec, type Region, type RegionOrderMode } from '../src/types'
 
 /* ----------------------------- PNG 编解码 ----------------------------- */
@@ -646,6 +646,62 @@ function verifyStrictPalette(c: Case, spec: CaseSpec): Report {
   }
 }
 
+/* ----------------------------- 颜色缓存键校验 ----------------------------- */
+
+/**
+ * 「不同颜色绝不能共用缓存键」的回归测试。
+ *
+ * 背景：颜色匹配结果按 RGB 缓存。原来 color.ts 用 5 位/通道、pattern.ts 用
+ * 6 位/通道分桶，桶内所有颜色共用首次算出的答案。实测色板里
+ * G15 #FCF9E0 与 H21 #FFFBE1 的 6 位键完全相同（(63,62,56)），
+ * 于是「同一张图、格子的处理顺序不同、结果不同」—— 先遇到谁整桶就都算谁。
+ * 这是**可复现性**问题：留着它，后面所有调试结论都不可信。
+ *
+ * 用完整 24 位键之后不同颜色必然落在不同键上，顺序无关性由结构保证。
+ * 这条断言把「键必须单射」钉死，防止有人为了性能再改回量化。
+ */
+function verifyColorCacheKey(): Report {
+  const byKey = new Map<number, number[]>()
+  PALETTE.forEach((p, i) => {
+    const k = colorCacheKey(p.rgb)
+    const a = byKey.get(k)
+    if (a) a.push(i)
+    else byKey.set(k, [i])
+  })
+  const collisions: number[][] = []
+  for (const g of byKey.values()) if (g.length > 1) collisions.push(g)
+
+  const norm = (s: string) => s.replace(/^([A-Z]+)0*(\d+)$/, '$1$2')
+  const idxOf = (code: string) => PALETTE.findIndex((p) => norm(p.keys.MARD ?? '') === code)
+  const g15 = idxOf('G15')
+  const h21 = idxOf('H21')
+  const separated =
+    g15 >= 0 && h21 >= 0 && colorCacheKey(PALETTE[g15].rgb) !== colorCacheKey(PALETTE[h21].rgb)
+
+  let selfHit = 0
+  for (let i = 0; i < PALETTE.length; i++) {
+    if (nearestPaletteIndex(PALETTE[i].rgb) === i) selfHit++
+  }
+
+  const checks: [string, boolean, string][] = [
+    [
+      '不同颜色不共用缓存键',
+      collisions.length === 0,
+      collisions.length === 0
+        ? `${PALETTE.length} 个颜色键全部唯一`
+        : `撞车 ${collisions.length} 组：${collisions.map((g) => g.map((i) => PALETTE[i].hex).join('/')).join(' ')}`,
+    ],
+    ['G15 与 H21 已分开（曾经同桶）', separated, `G15=${PALETTE[g15]?.hex} H21=${PALETTE[h21]?.hex}`],
+    ['每个色板颜色都能精确命中自己', selfHit === PALETTE.length, `${selfHit}/${PALETTE.length}`],
+  ]
+
+  return {
+    name: '颜色缓存：不同颜色不共用键（结果与处理顺序无关）',
+    ok: checks.every(([, ok]) => ok),
+    lines: checks.map(([n, ok, d]) => `  ${ok ? '✓' : '✗'} ${n} — ${d}`),
+  }
+}
+
 /* ----------------------------- 色号体系校验 ----------------------------- */
 
 /**
@@ -1013,6 +1069,13 @@ function main() {
   for (const l of strictRep.lines) console.log('    ' + l)
   console.log('')
   reports.push(strictRep)
+
+  console.log('================ 颜色缓存 ================\n')
+  const cacheRep = verifyColorCacheKey()
+  console.log(`${cacheRep.ok ? '✅ PASS' : '❌ FAIL'}  ${cacheRep.name}`)
+  for (const l of cacheRep.lines) console.log('    ' + l)
+  console.log('')
+  reports.push(cacheRep)
 
   console.log('================ 色号体系 ================\n')
   const sysRep = verifyPaletteSystem(renderCase(cases[0], 909), cases[0])
