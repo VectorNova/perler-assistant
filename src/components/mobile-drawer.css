@@ -1,0 +1,421 @@
+/* Mobile drawer: the guide bar stays small so the pattern remains the focus. */
+@media (max-width: 940px) {
+  .app.mobile {
+    --m-surface: #ffffff;
+    --m-surface-soft: #f7f9f8;
+    --m-border: #dfe6e2;
+    --m-text: #18211f;
+    --m-muted: #5c6b65;
+    --m-accent: var(--accent, #247a69);
+    --m-accent-soft: var(--accent-soft, #e6f2ee);
+  }
+
+  .app.mobile .m-topbar {
+    height: 48px;
+    flex: 0 0 48px;
+    padding: 4px 8px;
+    gap: 8px;
+  }
+
+  .app.mobile .m-topbar > .spacer { display: none; }
+  .app.mobile .m-topbar-name { font-size: 14px; }
+  .app.mobile .m-topbar-pct { font-size: 13px; }
+
+  .app.mobile .m-icon-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    flex: 0 0 40px;
+    border: 0;
+    border-radius: 8px;
+    padding: 0;
+    color: var(--m-text);
+    background: transparent;
+    cursor: pointer;
+  }
+
+  .app.mobile .m-icon-button:hover { background: var(--m-accent-soft); }
+  .app.mobile .m-icon-button:disabled { opacity: 0.4; cursor: default; }
+  .app.mobile .m-icon-button:focus-visible { outline: 2px solid var(--m-accent); outline-offset: -2px; }
+
+  .app.mobile .notice-bar {
+    align-items: center;
+    padding: 4px 10px;
+    flex: 0 0 auto;
+  }
+
+  .app.mobile .notice-bar .m-icon-button { width: 32px; height: 32px; flex-basis: 32px; }
+
+  .app.mobile .stage { position: relative; }
+  .app.mobile .canvas-wrap { background: #f0f3f2; }
+  .app.mobile .stage-bar { height: 40px; flex: 0 0 40px; padding: 0 8px 0 12px; }
+  .app.mobile .m-chart-position {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .app.mobile .m-current-swatch { width: 16px; height: 16px; flex: 0 0 16px; border-radius: 4px; border: 1px solid rgb(0 0 0 / 15%); }
+
+  .app.mobile .stage-progress {
+    position: absolute;
+    z-index: 4;
+    right: 12px;
+    bottom: 10px;
+    left: 12px;
+    width: fit-content;
+    max-width: calc(100% - 24px);
+    margin: 0 auto;
+    padding: 5px 10px;
+    border: 1px solid rgb(213 223 218 / 80%);
+    border-radius: 8px;
+    background: rgb(255 255 255 / 88%);
+    backdrop-filter: blur(8px);
+    pointer-events: none;
+  }
+
+  .app.mobile .stage-progress > .bar { display: none; }
+  .app.mobile .stage-progress > span { font-size: 11px; line-height: 1.3; }
+
+  .app.mobile .m-drawer-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 19;
+    width: 100%;
+    height: 100%;
+    border: 0;
+    padding: 0;
+    background: rgb(20 42 35 / 34%);
+    cursor: pointer;
+    animation: m-drawer-fade-in 150ms ease-out both;
+  }
+
+  .app.mobile .m-drawer {
+    z-index: 20;
+    width: 100%;
+    min-width: 0;
+    flex: 0 0 auto;
+    overflow: hidden;
+    color: var(--m-text);
+    background: var(--m-surface);
+    border: 1px solid var(--m-border);
+    border-bottom: 0;
+    box-shadow: 0 -8px 28px rgb(24 51 44 / 14%);
+  }
+
+  /* Match the fixed drawer height so the chart's last rows stay visible. */
+  .app.mobile:not(.is-immersive) .m-workspace {
+    padding-bottom: calc(104px + max(12px, env(safe-area-inset-bottom, 0px)));
+  }
+
+  /* 44px tabs + 60px action row + the device safe-area inset. */
+  .app.mobile .m-drawer.collapsed {
+    position: fixed;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    height: calc(104px + max(12px, env(safe-area-inset-bottom, 0px)));
+    max-height: calc(104px + max(12px, env(safe-area-inset-bottom, 0px)));
+    border-radius: 8px 8px 0 0;
+    padding-bottom: max(12px, env(safe-area-inset-bottom, 0px));
+  }
+
+  /* Secondary sheets retain a visible portion of the chart above them. */
+  .app.mobile .m-drawer.expanded {
+    position: fixed;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    height: min(68dvh, 640px);
+    max-height: min(68dvh, 640px);
+    border-radius: 8px 8px 0 0;
+    padding-bottom: max(12px, env(safe-area-inset-bottom, 0px));
+    animation: m-drawer-rise 180ms ease-out both;
+  }
+
+  .app.mobile .m-drawer-tabs {
+    display: flex;
+    align-items: stretch;
+    gap: 2px;
+    height: 44px;
+    min-height: 44px;
+    flex: 0 0 44px;
+    padding: 3px 7px;
+    border-bottom: 1px solid var(--m-border);
+    background: var(--m-surface);
+  }
+
+  .app.mobile .m-tab {
+    flex: 1 1 0;
+    min-width: 0;
+    min-height: 38px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--m-muted);
+    font-size: 13px;
+    font-weight: 600;
+    padding: 7px 3px;
+    cursor: pointer;
+    transition: color 120ms ease, background 120ms ease;
+  }
+
+  .app.mobile .m-tab:hover {
+    background: var(--m-surface-soft);
+    color: var(--m-text);
+  }
+
+  .app.mobile .m-tab.on {
+    background: var(--m-accent-soft);
+    color: var(--m-accent);
+  }
+
+  .app.mobile .m-drawer-toggle {
+    flex: 0 0 44px;
+    min-width: 44px;
+    min-height: 38px;
+    border: 1px solid var(--m-border);
+    border-radius: 8px;
+    background: var(--m-surface-soft);
+    color: var(--m-muted);
+    font-size: 18px;
+    display: grid;
+    place-items: center;
+    line-height: 1;
+    padding: 6px;
+    cursor: pointer;
+  }
+
+  .app.mobile .m-drawer-toggle:hover {
+    border-color: var(--m-accent);
+    color: var(--m-accent);
+  }
+
+  .app.mobile .m-compact {
+    display: flex;
+    align-items: center;
+    height: 60px;
+    min-height: 60px;
+    flex: 0 0 60px;
+    padding: 6px 10px;
+    background: var(--m-surface);
+  }
+
+  .app.mobile .m-compact-line {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    min-width: 0;
+    height: 48px;
+    gap: 7px;
+  }
+
+  .app.mobile .m-compact-status {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+    flex: 1 1 auto;
+    gap: 7px;
+    overflow: hidden;
+  }
+
+  .app.mobile .m-compact-code {
+    flex: 0 0 auto;
+    min-width: 40px;
+    border: 1px solid rgb(0 0 0 / 14%);
+    border-radius: 7px;
+    padding: 5px 7px;
+    text-align: center;
+    font-size: 13px;
+    font-weight: 800;
+    line-height: 1.15;
+    box-shadow: inset 0 -4px 7px rgb(0 0 0 / 8%);
+  }
+
+  .app.mobile .m-compact-meta {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 1px;
+    overflow: hidden;
+    color: var(--m-muted);
+    font-size: 11px;
+    line-height: 1.2;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .app.mobile .m-compact-meta span:last-child {
+    color: var(--m-text);
+    font-weight: 700;
+  }
+
+  .app.mobile .m-compact-complete {
+    flex: 0 0 auto;
+    min-width: 64px;
+    min-height: 48px;
+    border-radius: 8px;
+    padding: 8px 9px;
+    font-size: 13px;
+    line-height: 1.1;
+  }
+
+  .app.mobile .m-compact-undo {
+    flex: 0 0 44px;
+    width: 44px;
+    min-width: 44px;
+    min-height: 44px;
+    border-radius: 8px;
+    padding: 7px;
+    font-size: 21px;
+    line-height: 1;
+  }
+
+  .app.mobile .m-compact-start {
+    width: 100%;
+    min-height: 48px;
+    border-radius: 8px;
+    font-size: 14px;
+  }
+
+  .app.mobile .m-drawer-body {
+    min-height: 0;
+    flex: 1 1 auto;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+    background: var(--m-surface-soft);
+  }
+
+  .app.mobile .m-drawer-body .panel.side {
+    width: auto;
+    max-height: none;
+    padding: 12px 14px max(18px, env(safe-area-inset-bottom, 18px));
+  }
+
+  .app.mobile .m-tab:focus-visible,
+  .app.mobile .m-drawer-toggle:focus-visible,
+  .app.mobile .m-compact button:focus-visible {
+    outline: 3px solid rgb(36 122 105 / 34%);
+    outline-offset: 1px;
+  }
+
+  /* Focus mode leaves the canvas and its progress indicator unobstructed. */
+  .app.mobile.is-immersive .m-topbar,
+  .app.mobile.is-immersive .notice-bar,
+  .app.mobile.is-immersive > .error-box,
+  .app.mobile.is-immersive .m-drawer {
+    display: none;
+  }
+
+  .app.mobile.is-immersive .m-workspace {
+    padding-bottom: 0;
+  }
+
+  .app.mobile.is-immersive .stage-bar {
+    position: absolute;
+    z-index: 4;
+    top: max(8px, env(safe-area-inset-top, 0px));
+    right: 8px;
+    left: 8px;
+    border: 1px solid rgb(213 223 218 / 80%);
+    border-radius: 8px;
+    background: rgb(255 255 255 / 90%);
+    backdrop-filter: blur(8px);
+  }
+
+  .app.mobile.is-immersive .stage {
+    position: relative;
+  }
+
+  .app.mobile.is-immersive .m-immersive-tools {
+    position: absolute;
+    z-index: 5;
+    right: 12px;
+    bottom: max(12px, env(safe-area-inset-bottom, 0px));
+    left: 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    pointer-events: none;
+  }
+
+  .app.mobile.is-immersive .m-immersive-tools > * {
+    pointer-events: auto;
+  }
+
+  .app.mobile.is-immersive .m-immersive-undo {
+    width: 46px;
+    height: 46px;
+    flex-basis: 46px;
+    border: 1px solid var(--m-border);
+    border-radius: 8px;
+    background: rgb(255 255 255 / 90%);
+    box-shadow: 0 3px 12px rgb(24 51 44 / 16%);
+  }
+
+  .app.mobile.is-immersive .m-immersive-action {
+    min-height: 46px;
+    margin-left: auto;
+    min-width: 126px;
+    border-radius: 8px;
+    box-shadow: 0 4px 14px rgb(24 51 44 / 20%);
+  }
+
+  .app.mobile.is-immersive .stage-progress { bottom: calc(70px + env(safe-area-inset-bottom, 0px)); }
+}
+
+@media (max-width: 940px) and (max-height: 550px) {
+  .app.mobile:not(.is-immersive) .m-workspace {
+    padding-bottom: calc(80px + max(4px, env(safe-area-inset-bottom, 0px)));
+  }
+
+  .app.mobile .m-drawer.collapsed {
+    height: calc(80px + max(4px, env(safe-area-inset-bottom, 0px)));
+    max-height: calc(80px + max(4px, env(safe-area-inset-bottom, 0px)));
+    padding-bottom: max(4px, env(safe-area-inset-bottom, 0px));
+  }
+
+  .app.mobile .m-drawer-tabs { height: 36px; min-height: 36px; flex-basis: 36px; padding-block: 1px; }
+  .app.mobile .m-tab,
+  .app.mobile .m-drawer-toggle { min-height: 34px; padding-block: 4px; }
+  .app.mobile .m-compact { height: 44px; min-height: 44px; flex-basis: 44px; padding-block: 0; }
+  .app.mobile .m-compact-line { height: 44px; }
+  .app.mobile .m-compact-complete,
+  .app.mobile .m-compact-start { min-height: 44px; }
+  .app.mobile .notice-bar { display: none; }
+  .app.mobile .stage-bar { height: 34px; flex-basis: 34px; }
+}
+
+@keyframes m-drawer-rise {
+  from { opacity: 0.7; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes m-drawer-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app.mobile .m-drawer,
+  .app.mobile .m-drawer-backdrop,
+  .app.mobile .m-tab {
+    animation: none;
+    transition: none;
+  }
+}
+
+@media (max-width: 360px) {
+  .app.mobile .m-drawer-tabs { padding-inline: 4px; }
+  .app.mobile .m-tab { font-size: 12px; }
+  .app.mobile .m-compact { padding-inline: 7px; }
+  .app.mobile .m-compact-complete { min-width: 58px; padding-inline: 7px; }
+}

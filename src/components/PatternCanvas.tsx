@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { Minus, Plus, Scan } from 'lucide-react'
 import { EMPTY, type Brand, type DimMode } from '../types'
 import { PALETTE, codeOf, readableTextColor } from '../lib/color'
 
@@ -68,6 +69,7 @@ export default function PatternCanvas(props: Props) {
   viewRef.current = view
   const sizeRef = useRef(size)
   sizeRef.current = size
+  const fittedRef = useRef(true)
   const hoverRef = useRef<number | null>(null)
 
   /* ---------------- 图层（每格 1 像素，缩放时 drawImage 一次画完） ---------------- */
@@ -196,20 +198,32 @@ export default function PatternCanvas(props: Props) {
 
   /* ---------------- 尺寸自适应 ---------------- */
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const el = wrapRef.current
     if (!el) return
-    const ro = new ResizeObserver(() => {
+    const measure = () => {
       const r = el.getBoundingClientRect()
-      setSize({ w: Math.max(80, r.width), h: Math.max(80, r.height) })
-    })
+      const next = { w: Math.max(80, r.width), h: Math.max(80, r.height) }
+      const previous = sizeRef.current
+      if (next.w === previous.w && next.h === previous.h) return
+      sizeRef.current = next
+      setSize(next)
+      if (fittedRef.current) {
+        const scale = Math.max(0.4, Math.min((next.w - 32) / cols, (next.h - 32) / rows))
+        setView({ scale, tx: (next.w - cols * scale) / 2, ty: (next.h - rows * scale) / 2 })
+      } else {
+        // Preserve the viewed chart position when rotating or entering focus mode.
+        setView((v) => ({ ...v, tx: v.tx + (next.w - previous.w) / 2, ty: v.ty + (next.h - previous.h) / 2 }))
+      }
+    }
+    const ro = new ResizeObserver(measure)
     ro.observe(el)
-    const r = el.getBoundingClientRect()
-    setSize({ w: Math.max(80, r.width), h: Math.max(80, r.height) })
+    measure()
     return () => ro.disconnect()
-  }, [])
+  }, [cols, rows])
 
   const fit = useCallback(() => {
+    fittedRef.current = true
     const { w, h } = sizeRef.current
     const s = Math.max(0.4, Math.min((w - 32) / cols, (h - 32) / rows))
     setView({
@@ -226,6 +240,7 @@ export default function PatternCanvas(props: Props) {
 
   const zoomBy = useCallback(
     (factor: number) => {
+      fittedRef.current = false
       const { w, h } = sizeRef.current
       const v = viewRef.current
       const next = Math.max(0.4, Math.min(64, v.scale * factor))
@@ -242,6 +257,7 @@ export default function PatternCanvas(props: Props) {
   const centerOn = useCallback(
     (index: number, minScale = 14) => {
       if (index < 0 || index >= cells.length) return
+      fittedRef.current = false
       const { w, h } = sizeRef.current
       const v = viewRef.current
       const r = Math.floor(index / cols)
@@ -258,6 +274,7 @@ export default function PatternCanvas(props: Props) {
 
   const fitBounds = useCallback(
     (b: { minR: number; minC: number; maxR: number; maxC: number }) => {
+      fittedRef.current = false
       const { w, h } = sizeRef.current
       const bw = Math.max(1, b.maxC - b.minC + 1)
       const bh = Math.max(1, b.maxR - b.minR + 1)
@@ -637,6 +654,7 @@ export default function PatternCanvas(props: Props) {
     if (!cv) return
     const onWheel = (e: WheelEvent) => {
       e.preventDefault()
+      fittedRef.current = false
       const rect = cv.getBoundingClientRect()
       const v = viewRef.current
       const factor = e.deltaY > 0 ? 1 / 1.14 : 1.14
@@ -680,6 +698,7 @@ export default function PatternCanvas(props: Props) {
     }
     const dx = e.clientX - tracked.x
     const dy = e.clientY - tracked.y
+    fittedRef.current = false
     pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
 
     if (pointers.current.size >= 2) {
@@ -747,14 +766,14 @@ export default function PatternCanvas(props: Props) {
       />
       {targetStyle && <div className="target-pulse" style={targetStyle} />}
       <div className="canvas-tools">
-        <button type="button" onClick={() => zoomBy(1.25)} title="放大">
-          ＋
+        <button type="button" onClick={() => zoomBy(1.25)} title="放大" aria-label="放大">
+          <Plus size={18} aria-hidden="true" />
         </button>
-        <button type="button" onClick={() => zoomBy(1 / 1.25)} title="缩小">
-          －
+        <button type="button" onClick={() => zoomBy(1 / 1.25)} title="缩小" aria-label="缩小">
+          <Minus size={18} aria-hidden="true" />
         </button>
-        <button type="button" onClick={fit} title="适应窗口">
-          ⤢
+        <button type="button" onClick={fit} title="适应窗口" aria-label="适应窗口">
+          <Scan size={18} aria-hidden="true" />
         </button>
         <span className="zoom-label">{Math.round(view.scale)}px/格</span>
       </div>

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { ArrowLeft, Check, Maximize2, Minimize2, Scan, Undo2, X } from 'lucide-react'
 import ProjectHome from './components/ProjectHome'
 import Logo from './components/Logo'
 import CalibrateView from './components/CalibrateView'
@@ -180,6 +181,26 @@ export default function App() {
   const isMobile = useIsMobile()
   const [sheet, setSheet] = useState<MobileSheet>('guide')
   const [sheetExpanded, setSheetExpanded] = useState(false)
+  const [immersive, setImmersive] = useState(false)
+
+  useEffect(() => {
+    if (!isMobile || stage !== 'work') setImmersive(false)
+  }, [isMobile, stage])
+
+  useEffect(() => {
+    if (!notice || !isMobile || stage !== 'work') return
+    const timer = window.setTimeout(() => setNotice(null), 6000)
+    return () => window.clearTimeout(timer)
+  }, [notice, isMobile, stage])
+
+  useEffect(() => {
+    if (!immersive) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setImmersive(false)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [immersive])
 
   /** 手机端切换抽屉标签时顺带切模式：颜色=看分布，指引=拼豆指引 */
   const pickSheet = useCallback((s: MobileSheet) => {
@@ -1142,10 +1163,11 @@ export default function App() {
   /* ------------------------- 键盘快捷键 ------------------------- */
 
   useEffect(() => {
-    if (stage !== 'work') return
+    if (stage !== 'work' || (isMobile && sheetExpanded)) return
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement | null
-      if (t && (t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.tagName === 'TEXTAREA')) return
+      if (t?.closest('input, select, textarea')) return
+      if (t?.closest('button') && (e.code === 'Space' || e.key === 'Enter')) return
       if (e.code === 'Space') {
         e.preventDefault()
         if (mode === 'guide') {
@@ -1169,7 +1191,7 @@ export default function App() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [stage, mode, markCurrent, undo, markRegion, guideUnit, stepIndex, steps.length, gotoStep])
+  }, [stage, mode, markCurrent, undo, markRegion, guideUnit, stepIndex, steps.length, gotoStep, isMobile, sheetExpanded])
 
   /* ------------------------- 持久化 ------------------------- */
 
@@ -1742,6 +1764,12 @@ export default function App() {
     <DisplaySettings
       dimMode={dimMode}
       onDimMode={setDimMode}
+      showGrid={showGrid}
+      onShowGrid={setShowGrid}
+      showCodes={showCodes}
+      onShowCodes={setShowCodes}
+      showSectionLines={showSectionLines}
+      onShowSectionLines={setShowSectionLines}
       regionOrder={orderOpts.regionOrder}
       onRegionOrder={(m) => setOrderOpts((o) => ({ ...o, regionOrder: m }))}
       cellOrder={orderOpts.cellOrder}
@@ -1849,23 +1877,35 @@ export default function App() {
     const curCode = currentStep ? codeOf(currentStep.paletteIndex, brand) : ''
     const curHex = currentStep ? PALETTE[currentStep.paletteIndex].hex : '#888888'
     return (
-      <div className="app mobile">
+      <div className={`app mobile ${immersive ? 'is-immersive' : ''}`}>
         <header className="topbar m-topbar">
-          <button type="button" className="btn tiny" onClick={startOver} title="返回首页">
-            ← 首页
+          <button type="button" className="m-icon-button" onClick={startOver} title="返回首页" aria-label="返回首页">
+            <ArrowLeft size={19} aria-hidden="true" />
           </button>
           <div className="m-topbar-name" title={fileName}>
             {projectName || fileName}
           </div>
           <div className="spacer" />
           <div className="m-topbar-pct">{overallPct.toFixed(1)}%</div>
+          <button
+            type="button"
+            className="m-icon-button m-focus-toggle"
+            onClick={() => {
+              setImmersive((v) => !v)
+              setSheetExpanded(false)
+            }}
+            aria-label={immersive ? '退出专注模式' : '进入专注模式'}
+            title={immersive ? '退出专注模式' : '进入专注模式'}
+          >
+            {immersive ? <Minimize2 size={19} aria-hidden="true" /> : <Maximize2 size={19} aria-hidden="true" />}
+          </button>
         </header>
 
         {notice && (
           <div className="notice-bar">
             <span className="m-notice-text">{notice}</span>
-            <button type="button" className="btn tiny" onClick={() => setNotice(null)}>
-              知道了
+            <button type="button" className="m-icon-button" onClick={() => setNotice(null)} aria-label="关闭通知" title="关闭通知">
+              <X size={17} aria-hidden="true" />
             </button>
           </div>
         )}
@@ -1874,25 +1914,79 @@ export default function App() {
         <main className="m-workspace">
           <section className="stage">
             <div className="stage-bar">
-              <span className="muted small">
-                {hoverInfo
-                  ? `第 ${hoverInfo.row + 1} 行 · ${hoverInfo.col + 1} 列 · ${hoverInfo.label}`
-                  : mode === 'guide' && targetPos
-                    ? `目标：第 ${targetPos.row + 1} 行 · ${targetPos.col + 1} 列`
-                    : '拖动查看，双指缩放'}
+              <span className="m-chart-position muted small">
+                {immersive && mode === 'guide' && currentStep ? (
+                  <>
+                    <i className="m-current-swatch" style={{ background: curHex }} />
+                    {curCode} · {guideUnit === 'cell' ? (targetCell === null ? 0 : 1) : currentRegionPending.length} 粒待拼
+                  </>
+                ) : (
+                  hoverInfo
+                    ? `第 ${hoverInfo.row + 1} 行 · ${hoverInfo.col + 1} 列 · ${hoverInfo.label}`
+                    : mode === 'guide' && targetPos
+                      ? `目标：第 ${targetPos.row + 1} 行 · ${targetPos.col + 1} 列`
+                      : `${cols} × ${rows} · ${steps.length} 色`
+                )}
               </span>
               <div className="spacer" />
               <button
                 type="button"
-                className="btn tiny"
+                className="m-icon-button"
                 onClick={() => setFitToken((x) => x + 1)}
                 title="适应窗口"
+                aria-label="适应窗口"
               >
-                适应
+                <Scan size={19} aria-hidden="true" />
               </button>
+              {immersive && (
+                <button type="button" className="m-icon-button m-immersive-exit" onClick={() => setImmersive(false)} aria-label="退出专注模式" title="退出专注模式">
+                  <Minimize2 size={19} aria-hidden="true" />
+                </button>
+              )}
             </div>
             {canvasEl}
             {progressEl}
+            {immersive && (
+              <div className="m-immersive-tools">
+                {mode === 'guide' && steps.length > 0 ? (
+                  <>
+                    <button
+                      type="button"
+                      className="m-icon-button m-immersive-undo"
+                      onClick={undo}
+                      disabled={history.length === 0}
+                      aria-label="撤销"
+                      title="撤销"
+                    >
+                      <Undo2 size={19} aria-hidden="true" />
+                    </button>
+                    <button
+                      type="button"
+                      className="btn primary m-immersive-action"
+                      onClick={guideUnit === 'cell' ? markCurrent : markRegion}
+                      disabled={guideUnit === 'cell' ? targetCell === null : regionIndex < 0}
+                      aria-label={guideUnit === 'cell' ? '这一粒拼好了' : '这一块拼好了'}
+                    >
+                      <Check size={19} aria-hidden="true" /> 完成{guideUnit === 'cell' ? '这粒' : '这块'}
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    className="btn primary m-immersive-action"
+                    onClick={() => {
+                      setSheet('guide')
+                      setSheetExpanded(false)
+                      setMode('guide')
+                      setRightTab('guide')
+                      if (currentStep) setSelected(currentStep.paletteIndex)
+                    }}
+                  >
+                    开始指引
+                  </button>
+                )}
+              </div>
+            )}
           </section>
 
           <MobileDrawer
@@ -1901,7 +1995,10 @@ export default function App() {
             expanded={sheetExpanded}
             onExpanded={setSheetExpanded}
             guideActive={mode === 'guide' && steps.length > 0}
+            guideUnit={guideUnit}
             onStartGuide={() => {
+              setSheet('guide')
+              setSheetExpanded(false)
               setMode('guide')
               setRightTab('guide')
               if (currentStep) setSelected(currentStep.paletteIndex)
@@ -1913,7 +2010,7 @@ export default function App() {
             regionIndex={regionIndex}
             regionCount={colorRegions.length}
             regionPending={currentRegionPending.length}
-            canMark={guideUnit === 'cell' ? currentRegionPending.length > 0 : regionIndex >= 0}
+            canMark={guideUnit === 'cell' ? targetCell !== null : regionIndex >= 0}
             canUndo={history.length > 0}
             onMarkRegion={guideUnit === 'cell' ? markCurrent : markRegion}
             onUndo={undo}

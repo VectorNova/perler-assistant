@@ -1,5 +1,7 @@
-import type { ReactNode } from 'react'
+import { useEffect, useRef, type ReactNode } from 'react'
+import { Check, ChevronDown, ChevronUp, Undo2 } from 'lucide-react'
 import { readableTextColor } from '../lib/color'
+import './mobile-drawer.css'
 
 export type MobileSheet = 'guide' | 'colors' | 'display' | 'info'
 
@@ -18,6 +20,7 @@ interface Props {
 
   /** 拼豆指引是否已开始（没开始时收起态只显示一个「开始」按钮） */
   guideActive: boolean
+  guideUnit: 'region' | 'cell'
   onStartGuide: () => void
 
   stepNo: number
@@ -54,6 +57,7 @@ export default function MobileDrawer({
   expanded,
   onExpanded,
   guideActive,
+  guideUnit,
   onStartGuide,
   stepNo,
   stepCount,
@@ -68,86 +72,144 @@ export default function MobileDrawer({
   onUndo,
   children,
 }: Props) {
+  const drawerRef = useRef<HTMLElement>(null)
+  useEffect(() => {
+    if (!expanded) return
+    const previousFocus = document.activeElement as HTMLElement | null
+    drawerRef.current?.querySelector<HTMLButtonElement>('.m-tab.on')?.focus()
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onExpanded(false)
+      if (event.key !== 'Tab') return
+      const controls = Array.from(drawerRef.current?.querySelectorAll<HTMLElement>(
+        'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled)',
+      ) ?? []).filter((element) => element.getClientRects().length > 0)
+      const first = controls[0]
+      const last = controls[controls.length - 1]
+      if (!first || !last) return
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+      if (previousFocus?.isConnected) previousFocus.focus()
+    }
+  }, [expanded, onExpanded])
+
   const pick = (key: MobileSheet) => {
     if (key === sheet) {
-      if (key === 'guide') onExpanded(!expanded)
+      onExpanded(!expanded)
       return
     }
     onSheet(key)
+    // The guide is useful in its compact form; every other sheet opens.
     onExpanded(key !== 'guide')
   }
 
-  const showCompact = !expanded && sheet === 'guide'
-
+  const showCompact = !expanded
   return (
-    <div className={`m-drawer ${expanded ? 'expanded' : ''}`}>
-      <div className="m-drawer-tabs">
-        {TABS.map((t) => (
-          <button
-            key={t.key}
-            type="button"
-            className={`m-tab ${sheet === t.key ? 'on' : ''}`}
-            onClick={() => pick(t.key)}
-          >
-            {t.label}
-          </button>
-        ))}
+    <>
+      {expanded && (
         <button
           type="button"
-          className="m-drawer-toggle"
-          onClick={() => onExpanded(!expanded)}
-          title={expanded ? '收起' : '展开'}
-          aria-expanded={expanded}
-        >
-          {expanded ? '▾ 收起' : '▴ 展开'}
-        </button>
-      </div>
+          className="m-drawer-backdrop"
+          aria-label="关闭控制面板"
+          onClick={() => onExpanded(false)}
+        />
+      )}
+      <section
+        ref={drawerRef}
+        className={`m-drawer ${expanded ? 'expanded' : 'collapsed'}`}
+        role={expanded ? 'dialog' : 'region'}
+        aria-modal={expanded || undefined}
+        aria-label="图纸控制面板"
+      >
+        <div className="m-drawer-tabs" role="tablist" aria-label="图纸工具">
+          {TABS.map((t) => (
+            <button
+              key={t.key}
+              id={`mobile-tab-${t.key}`}
+              type="button"
+              className={`m-tab ${sheet === t.key ? 'on' : ''}`}
+              onClick={() => pick(t.key)}
+              role="tab"
+              aria-selected={sheet === t.key}
+              aria-controls={expanded && sheet === t.key ? `mobile-sheet-${t.key}` : undefined}
+            >
+              {t.label}
+            </button>
+          ))}
+          <button
+            type="button"
+            className="m-drawer-toggle"
+            onClick={() => onExpanded(!expanded)}
+            title={expanded ? '收起控制面板' : '展开控制面板'}
+            aria-label={expanded ? '收起控制面板' : '展开控制面板'}
+            aria-expanded={expanded}
+            aria-controls={expanded ? `mobile-sheet-${sheet}` : undefined}
+          >
+            {expanded ? <ChevronDown size={20} aria-hidden="true" /> : <ChevronUp size={20} aria-hidden="true" />}
+          </button>
+        </div>
 
       {showCompact && (
         <div className="m-compact">
           {guideActive && stepCount > 0 ? (
-            <>
-              <div className="m-compact-line">
+            <div className="m-compact-line">
+              <div className="m-compact-status" aria-live="polite">
                 <span
                   className="m-compact-code"
                   style={{ background: hex, color: readableTextColor(hexToRgbSafe(hex)) }}
                 >
                   {code}
                 </span>
-                <span className="muted small">
-                  第 {stepNo}/{stepCount} 种 · 第 {regionIndex + 1}/{regionCount} 块 ·{' '}
-                  <b>{regionPending}</b> 粒
+                <span className="m-compact-meta">
+                  <span>第 {stepNo}/{stepCount} 色</span>
+                  <span>{regionIndex < 0 ? '本色已完成' : `块 ${regionIndex + 1}/${regionCount}`}</span>
+                  <span>{guideUnit === 'cell' ? (canMark ? 1 : 0) : regionPending} 粒待拼</span>
                 </span>
-                <span className="spacer" />
-                <button
-                  type="button"
-                  className="btn tiny"
-                  onClick={onUndo}
-                  disabled={!canUndo}
-                  title="撤销"
-                >
-                  ↶
-                </button>
               </div>
               <button
                 type="button"
-                className="btn primary big block"
+                className="m-compact-complete btn primary"
                 onClick={onMarkRegion}
                 disabled={!canMark}
+                title={guideUnit === 'cell' ? '这一粒拼好了' : '这一块拼好了'}
+                aria-label={guideUnit === 'cell' ? '这一粒拼好了' : '这一块拼好了'}
               >
-                ✓ 这一块拼好了（{regionPending} 粒）
+                <Check size={18} aria-hidden="true" /> 完成
               </button>
-            </>
+              <button
+                type="button"
+                className="m-compact-undo btn"
+                onClick={onUndo}
+                disabled={!canUndo}
+                title="撤销"
+                aria-label="撤销"
+              >
+                <Undo2 size={19} aria-hidden="true" />
+              </button>
+            </div>
           ) : (
-            <button type="button" className="btn primary big block" onClick={onStartGuide}>
+            <button type="button" className="m-compact-start btn primary" onClick={onStartGuide}>
               开始拼豆指引
             </button>
           )}
         </div>
       )}
 
-      {expanded && <div className="m-drawer-body">{children}</div>}
-    </div>
+      {expanded && (
+        <div className="m-drawer-body" id={`mobile-sheet-${sheet}`} role="tabpanel" aria-labelledby={`mobile-tab-${sheet}`}>
+          {children}
+        </div>
+      )}
+      </section>
+    </>
   )
 }
 

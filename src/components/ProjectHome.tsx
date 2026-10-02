@@ -147,7 +147,7 @@ export default function ProjectHome({
         <Logo />
         <div className="spacer" />
         <span className="muted small">
-          项目存在本机浏览器里（IndexedDB），不上传任何服务器
+          图纸与进度保存在此设备，随时继续
         </span>
       </header>
 

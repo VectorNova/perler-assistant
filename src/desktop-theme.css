@@ -1,0 +1,227 @@
+/* Shared neutral surfaces keep the chart colors visually distinct. */
+:root {
+  --bg: #f2f4f2;
+  --panel: #ffffff;
+  --panel-2: #f7f9f8;
+  --border: #dfe6e2;
+  --border-strong: #c8d3cd;
+  --text: #18211f;
+  --text-2: #5c6b65;
+  --text-3: #8a9791;
+  --accent: #247a69;
+  --accent-soft: #e7f3ef;
+  --green: #16805e;
+  --shadow: 0 1px 2px rgba(25, 48, 40, 0.05), 0 8px 22px rgba(25, 48, 40, 0.06);
+}
+
+.settings-display-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px 8px;
+  margin: 4px 0 12px;
+}
+
+.settings-display-grid .checkbox {
+  min-width: 0;
+  margin-top: 0;
+}
+
+/*
+ * Desktop visual layer.
+ * Keep this separate from the interaction/layout rules in styles.css so the
+ * canvas can be tuned without making the mobile drawer more fragile.
+ */
+@media (min-width: 941px) {
+  button,
+  select,
+  input {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  button:focus-visible,
+  select:focus-visible,
+  input:focus-visible,
+  [role='button']:focus-visible {
+    outline: 3px solid rgba(36, 122, 105, 0.25);
+    outline-offset: 2px;
+  }
+
+  .btn {
+    border-color: var(--border-strong);
+    box-shadow: 0 1px 1px rgba(25, 48, 40, 0.04);
+  }
+
+  .btn.primary {
+    box-shadow: 0 2px 5px rgba(36, 122, 105, 0.18);
+  }
+
+  .btn.primary:hover:not(:disabled) {
+    background: #1e685b;
+    border-color: #1e685b;
+  }
+
+  .mode-switch button.active,
+  .unit-switch button.active,
+  .canvas-tools button.active {
+    background: var(--accent);
+  }
+
+  .topbar,
+  .home-top {
+    background: rgba(255, 255, 255, 0.94);
+    box-shadow: 0 1px 0 rgba(25, 48, 40, 0.03);
+  }
+
+  .workspace {
+    min-height: 0;
+    background: var(--bg);
+    gap: 0;
+    padding: 0;
+  }
+
+  .panel.side {
+    min-height: 0;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    overflow: hidden auto;
+  }
+
+  /* Keep both lists readable while preserving a useful canvas at 941–1080px. */
+  .panel.side.left {
+    width: clamp(220px, 19.3vw, 278px);
+    flex: 0 0 clamp(220px, 19.3vw, 278px);
+  }
+
+  .panel.side.right {
+    width: clamp(268px, 22.1vw, 318px);
+    flex: 0 0 clamp(268px, 22.1vw, 318px);
+  }
+
+  .stage {
+    min-width: 0;
+    min-height: 0;
+    border: 0;
+    border-inline: 1px solid var(--border);
+    border-radius: 0;
+    overflow: hidden;
+    background: #edf1ef;
+    box-shadow: none;
+  }
+
+  .stage-bar,
+  .stage-progress {
+    background: rgba(255, 255, 255, 0.92);
+  }
+
+  .stage-bar {
+    padding: 8px 14px;
+  }
+
+  .canvas-wrap {
+    min-width: 0;
+    background: #edf1ef;
+  }
+
+  .canvas-tools {
+    right: 14px;
+    bottom: 14px;
+    border-color: rgba(200, 211, 205, 0.9);
+    box-shadow: 0 5px 16px rgba(25, 48, 40, 0.12);
+  }
+
+  .tabs {
+    background: rgba(255, 255, 255, 0.94);
+  }
+
+  .color-row.active {
+    border-left-color: var(--accent);
+  }
+
+  .color-row:hover,
+  .region-chip:hover,
+  .btn:hover:not(:disabled) {
+    background: #f1f7f4;
+  }
+
+  .home {
+    background: var(--bg);
+  }
+
+  .home-body {
+    gap: clamp(16px, 1.5vw, 24px);
+    padding: clamp(18px, 1.8vw, 28px) clamp(18px, 2vw, 32px) 34px;
+  }
+
+  .home-hero,
+  .home-projects {
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .home-hero h1 {
+    letter-spacing: 0;
+  }
+
+  .home-tabs button.on {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+
+  .dropzone {
+    border-color: #c7d5cf;
+    background: #fbfdfc;
+  }
+
+  .dropzone:hover,
+  .dropzone.dragging {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+  }
+}
+
+/* At the compact desktop width the home page remains a single, comfortable
+ * column (styles.css switches it at 1080px), with less outer whitespace. */
+@media (min-width: 941px) and (max-width: 1080px) {
+  .home-body {
+    max-width: 920px;
+    padding: 18px;
+    gap: 16px;
+  }
+
+  .proj-grid {
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  }
+}
+
+.logo-text {
+  background: none;
+  color: var(--accent);
+  letter-spacing: 0;
+}
+
+.canvas-tools button { display: grid; place-items: center; }
+.btn.primary:hover:not(:disabled) { background: #1e685b; border-color: #1e685b; }
+.callout { color: var(--accent); border-color: var(--border); }
+.proj-card { border-radius: 8px; }
+.order-row > span { white-space: nowrap; flex-shrink: 0; }
+.order-row select { min-width: 0; }
+.home-hero,
+.home-projects { border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+
+/* The compact mobile shell owns its own spacing and remains edge-to-edge. */
+@media (max-width: 940px) {
+  .workspace {
+    gap: 0;
+    padding: 0;
+  }
+
+  .panel.side,
+  .stage {
+    border-radius: 0;
+    box-shadow: none;
+  }
+}

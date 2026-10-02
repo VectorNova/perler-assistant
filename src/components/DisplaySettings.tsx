@@ -4,6 +4,12 @@ import { CELL_ORDER_OPTIONS, REGION_ORDER_OPTIONS } from '../lib/order'
 interface Props {
   dimMode: DimMode
   onDimMode: (m: DimMode) => void
+  showGrid: boolean
+  onShowGrid: (v: boolean) => void
+  showCodes: boolean
+  onShowCodes: (v: boolean) => void
+  showSectionLines: boolean
+  onShowSectionLines: (v: boolean) => void
   regionOrder: RegionOrderMode
   onRegionOrder: (m: RegionOrderMode) => void
   cellOrder: CellOrderMode
@@ -25,6 +31,12 @@ interface Props {
 export default function DisplaySettings({
   dimMode,
   onDimMode,
+  showGrid,
+  onShowGrid,
+  showCodes,
+  onShowCodes,
+  showSectionLines,
+  onShowSectionLines,
   regionOrder,
   onRegionOrder,
   cellOrder,
@@ -40,6 +52,25 @@ export default function DisplaySettings({
 }: Props) {
   return (
     <div className="settings">
+      <h3>图纸显示</h3>
+      <div className="settings-display-grid">
+        <label className="checkbox">
+          <input type="checkbox" checked={showGrid} onChange={(e) => onShowGrid(e.target.checked)} />
+          网格
+        </label>
+        <label className="checkbox">
+          <input type="checkbox" checked={showCodes} onChange={(e) => onShowCodes(e.target.checked)} />
+          色号
+        </label>
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={showSectionLines}
+            onChange={(e) => onShowSectionLines(e.target.checked)}
+          />
+          分区线
+        </label>
+      </div>
       <h3>未选中颜色怎么显示</h3>
       <div className="radio-row">
         {(

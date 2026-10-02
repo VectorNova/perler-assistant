@@ -7,7 +7,7 @@ import { useEffect, useState } from 'react'
  * 拖窗口不会疯狂重渲染。React 18 的 useSyncExternalStore 也能做，
  * 但这里只是一个布尔值，手写更直观。
  */
-export function useIsMobile(maxWidth = 720): boolean {
+export function useIsMobile(maxWidth = 940): boolean {
   const query = `(max-width: ${maxWidth}px)`
   const [isMobile, setIsMobile] = useState(() => {
     if (typeof window === 'undefined' || !window.matchMedia) return false

@@ -4,7 +4,7 @@
  *   node tools/mobile.mjs
  *
  * 用 CDP 的 setDeviceMetricsOverride 强制成手机视口（而不是只缩窗口），
- * 这样才能真实触发 matchMedia('(max-width: 720px)')。
+ * 这样才能真实触发 matchMedia('(max-width: 940px)')。
  */
 import { spawn } from 'node:child_process'
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync } from 'node:fs'
@@ -54,12 +54,13 @@ class CDP {
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject })
       this.ws.send(JSON.stringify({ id, method, params }))
-      setTimeout(() => {
+      const timeout = setTimeout(() => {
         if (this.pending.has(id)) {
           this.pending.delete(id)
           reject(new Error(`CDP 超时：${method}`))
         }
       }, 180000)
+      timeout.unref?.()
     })
   }
   async eval(expression) {
@@ -89,6 +90,28 @@ class CDP {
     writeFileSync(path.join(SHOTS, name), Buffer.from(r.data, 'base64'))
     console.log(`  → _shots/${name}`)
   }
+  async click(selector) {
+    const point = await this.eval(`(() => {
+      const element = document.querySelector(${JSON.stringify(selector)});
+      if (!element || element.disabled) return null;
+      const rect = element.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return null;
+      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    })()`)
+    if (!point) throw new Error(`控件不可点击：${selector}`)
+    await this.send('Input.dispatchMouseEvent', { type: 'mousePressed', button: 'left', clickCount: 1, ...point })
+    await this.send('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', clickCount: 1, ...point })
+  }
+  async escape() {
+    const params = { key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27 }
+    await this.send('Input.dispatchKeyEvent', { type: 'keyDown', ...params })
+    await this.send('Input.dispatchKeyEvent', { type: 'keyUp', ...params })
+  }
+  async tab(shift = false) {
+    const params = { key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9, nativeVirtualKeyCode: 9, modifiers: shift ? 8 : 0 }
+    await this.send('Input.dispatchKeyEvent', { type: 'keyDown', ...params })
+    await this.send('Input.dispatchKeyEvent', { type: 'keyUp', ...params })
+  }
 }
 
 const textOf = (sel) => `(document.querySelector(${JSON.stringify(sel)})?.textContent ?? '').replace(/\\s+/g,' ').trim()`
@@ -101,6 +124,29 @@ const clickIn = (sel, text) => `(() => {
 })()`
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+const ERROR_HOOK = `window.__mErrors = []; window.addEventListener('error', (e) => window.__mErrors.push(String(e.message))); window.addEventListener('unhandledrejection', (e) => window.__mErrors.push(String(e.reason)));`
+const LAYOUT = `(() => {
+  const rect = (selector) => {
+    const element = document.querySelector(selector);
+    if (!element) return { top: 0, bottom: 0, width: 0, height: 0 };
+    const { top, bottom, width, height } = element.getBoundingClientRect();
+    return { top, bottom, width, height };
+  };
+  return {
+    stage: rect('.stage'), canvas: rect('.canvas-wrap'), drawer: rect('.m-drawer'),
+    compact: rect('.m-compact'), bar: rect('.m-topbar'),
+    scrollW: document.documentElement.scrollWidth,
+    clientW: document.documentElement.clientWidth, vh: innerHeight,
+  };
+})()`
+
+function checkCanvasClear(layout, name) {
+  check(
+    name,
+    layout.canvas.height > 0 && layout.stage.bottom <= layout.drawer.top + 1,
+    `画布 ${Math.round(layout.canvas.height)}px，工作区底 ${Math.round(layout.stage.bottom)} / 抽屉顶 ${Math.round(layout.drawer.top)}`,
+  )
+}
 
 async function main() {
   if (!CHROME) {
@@ -144,8 +190,8 @@ async function main() {
     await cdp.send('Runtime.enable')
     await cdp.send('Page.enable')
 
-    // 装未捕获错误钩子后再强制手机视口，然后重载
-    await cdp.eval(`window.__mErrors = []; window.addEventListener('error', (e) => window.__mErrors.push(String(e.message))); window.addEventListener('unhandledrejection', (e) => window.__mErrors.push(String(e.reason))); true`)
+    // 每次导航都安装错误钩子，覆盖项目创建与首页恢复。
+    await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: ERROR_HOOK })
     await cdp.send('Emulation.setDeviceMetricsOverride', {
       width: 390,
       height: 844,
@@ -153,7 +199,6 @@ async function main() {
       mobile: true,
     })
     await cdp.send('Page.navigate', { url: `${BASE}/?demo=a&auto=1` })
-    await cdp.eval(`window.__mErrors = []; window.addEventListener('error', (e) => window.__mErrors.push(String(e.message))); window.addEventListener('unhandledrejection', (e) => window.__mErrors.push(String(e.reason))); true`)
     await cdp.waitFor(`!!document.querySelector('.app.mobile')`, 60000, '移动端外壳')
     await sleep(1200)
 
@@ -182,15 +227,54 @@ async function main() {
     )
 
     /* ---- 3. 收起态：画布留出大部分屏幕 ---- */
-    const layout = await cdp.eval(`(() => {
-      const r = (s) => { const e = document.querySelector(s); return e ? Math.round(e.getBoundingClientRect().height) : 0; };
-      return { canvas: r('.stage'), drawer: r('.m-drawer'), compact: r('.m-compact'), bar: r('.m-topbar') };
-    })()`)
+    const layout = await cdp.eval(LAYOUT)
     check(
-      '收起态画布占屏幕主体（≥55% 视口高）',
-      layout.canvas >= overflow.vh * 0.55,
-      `画布 ${layout.canvas} / 视口 ${overflow.vh}（顶栏 ${layout.bar}，抽屉 ${layout.drawer}）`,
+      '收起态图纸画布占屏幕主体（≥70% 视口高）',
+      layout.canvas.height >= overflow.vh * 0.7,
+      `画布 ${Math.round(layout.canvas.height)} / 视口 ${overflow.vh}（顶栏 ${Math.round(layout.bar.height)}，抽屉 ${Math.round(layout.drawer.height)}）`,
     )
+    checkCanvasClear(layout, '收起抽屉不遮住图纸底部')
+    const canvasColors = await cdp.eval(`(() => {
+      const canvas = document.querySelector('.pattern-canvas');
+      if (!canvas) return 0;
+      const ctx = canvas.getContext('2d');
+      const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+      const colors = new Set();
+      for (let y = 0; y < canvas.height; y += 13) {
+        for (let x = 0; x < canvas.width; x += 13) {
+          const i = (y * canvas.width + x) * 4;
+          colors.add(pixels[i] + ',' + pixels[i + 1] + ',' + pixels[i + 2]);
+        }
+      }
+      return colors.size;
+    })()`)
+    check('图纸画布渲染了实际色块', canvasColors > 8, `${canvasColors} 种采样颜色`)
+    const initialFit = await cdp.eval(`(() => {
+      const canvas = document.querySelector('.pattern-canvas');
+      const rect = canvas.getBoundingClientRect();
+      const pixels = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+      const background = Array.from(pixels.slice(0, 3));
+      const foreground = (x, y) => {
+        const p = (y * canvas.width + x) * 4;
+        return Math.abs(pixels[p] - background[0]) + Math.abs(pixels[p + 1] - background[1]) + Math.abs(pixels[p + 2] - background[2]) > 40;
+      };
+      const horizontal = [], vertical = [];
+      const midX = Math.floor(canvas.width / 2), midY = Math.floor(canvas.height / 2);
+      for (let x = 0; x < canvas.width; x++) if (foreground(x, midY)) horizontal.push(x);
+      for (let y = 0; y < canvas.height; y++) if (foreground(midX, y)) vertical.push(y);
+      if (!horizontal.length || !vertical.length) return null;
+      const sx = rect.width / canvas.width, sy = rect.height / canvas.height;
+      const x0 = horizontal[0] * sx, x1 = horizontal[horizontal.length - 1] * sx;
+      const y0 = vertical[0] * sy, y1 = vertical[vertical.length - 1] * sy;
+      return { x0, x1, y0, y1, width: rect.width, height: rect.height,
+        dx: Math.abs((x0 + x1) / 2 - rect.width / 2),
+        dy: Math.abs((y0 + y1) / 2 - rect.height / 2) };
+    })()`)
+    check('首次适应将图纸完整居中在真实画布内',
+      initialFit && initialFit.dx <= 12 && initialFit.dy <= 12 &&
+      initialFit.x0 >= 8 && initialFit.y0 >= 8 &&
+      initialFit.x1 <= initialFit.width - 8 && initialFit.y1 <= initialFit.height - 8,
+      initialFit ? `中心误差 ${initialFit.dx.toFixed(1)} / ${initialFit.dy.toFixed(1)}px，边界 ${initialFit.x0.toFixed(0)},${initialFit.y0.toFixed(0)}–${initialFit.x1.toFixed(0)},${initialFit.y1.toFixed(0)}` : '没有检测到图纸边界')
 
     /* ---- 4. 收起态就能看到关键信息和大按钮 ---- */
     const compact = await cdp.eval(textOf('.m-compact'))
@@ -202,21 +286,21 @@ async function main() {
     await cdp.shot('mobile-1-browse.png')
 
     /* ---- 5. 进入指引：紧凑条给出色号 / 块粒数 / 大按钮 ---- */
-    await cdp.eval(clickIn('.m-compact .btn', '开始拼豆指引'))
+    await cdp.click('.m-compact-start')
     await sleep(800)
     const compactGuide = await cdp.eval(textOf('.m-compact'))
     check(
       '进入指引后紧凑条显示当前色号与块内粒数',
-      /第 \d+\/\d+ 种/.test(compactGuide) && /第 \d+\/\d+ 块/.test(compactGuide) && /粒/.test(compactGuide),
+      /第 \d+\/\d+ 色/.test(compactGuide) && /块 \d+\/\d+/.test(compactGuide) && /\d+ 粒待拼/.test(compactGuide),
       compactGuide.slice(0, 90),
     )
     const markBtn = await cdp.eval(`(() => {
-      const b = [...document.querySelectorAll('.m-compact .btn')].find((x) => x.textContent.includes('这一块拼好了'));
-      return b ? b.textContent.trim() : '';
+      const b = document.querySelector('.m-compact-complete');
+      return b ? { text: b.textContent.trim(), label: b.getAttribute('aria-label'), enabled: !b.disabled } : null;
     })()`)
-    check('紧凑条里有「这一块拼好了（N 粒）」大按钮', /这一块拼好了（\d+ 粒）/.test(markBtn), markBtn)
+    check('紧凑条的完成按钮可用且有明确名称', markBtn?.enabled && markBtn.label === '这一块拼好了', markBtn?.text ?? '没有按钮')
     const bigBtnH = await cdp.eval(`(() => {
-      const b = [...document.querySelectorAll('.m-compact .btn')].find((x) => x.textContent.includes('这一块拼好了'));
+      const b = document.querySelector('.m-compact-complete');
       return b ? Math.round(b.getBoundingClientRect().height) : 0;
     })()`)
     check('大按钮的触摸高度 ≥ 48px', bigBtnH >= 48, `${bigBtnH}px`)
@@ -224,13 +308,53 @@ async function main() {
 
     /* ---- 6. 点大按钮真的能拼（交互闭环） ---- */
     const before = await cdp.eval(`document.querySelector('.m-topbar-pct')?.textContent?.trim() ?? ''`)
-    await cdp.eval(clickIn('.m-compact .btn', '这一块拼好了'))
+    await cdp.click('.m-compact-complete')
     await sleep(900)
     const after = await cdp.eval(`document.querySelector('.m-topbar-pct')?.textContent?.trim() ?? ''`)
     check('点大按钮真的标记了这一块', before !== after, `${before} → ${after}`)
 
+    /* ---- 专注模式保留完成闭环，同时把画布扩展到视口主体 ---- */
+    await cdp.click('.m-focus-toggle')
+    await cdp.waitFor(`!!document.querySelector('.app.is-immersive')`, 5000, '进入专注模式')
+    await sleep(300)
+    const focusLayout = await cdp.eval(LAYOUT)
+    check('专注模式图纸画布占视口超过 90%', focusLayout.canvas.height > focusLayout.vh * 0.9,
+      `画布 ${Math.round(focusLayout.canvas.height)} / 视口 ${focusLayout.vh}`)
+    const focusControls = await cdp.eval(`(() => ({
+      topbarHidden: getComputedStyle(document.querySelector('.m-topbar')).display === 'none',
+      drawerHidden: getComputedStyle(document.querySelector('.m-drawer')).display === 'none',
+      exit: !!document.querySelector('.m-immersive-exit'),
+      action: !!document.querySelector('.m-immersive-action:not(:disabled)'),
+    }))()`)
+    check('专注模式隐藏顶栏和抽屉并保留退出与完成按钮',
+      focusControls.topbarHidden && focusControls.drawerHidden && focusControls.exit && focusControls.action)
+    const focusBefore = await cdp.eval(textOf('.m-topbar-pct'))
+    await cdp.click('.m-immersive-action')
+    await cdp.waitFor(`${textOf('.m-topbar-pct')} !== ${JSON.stringify(focusBefore)}`, 5000, '专注模式完成进度更新')
+    const focusAfter = await cdp.eval(textOf('.m-topbar-pct'))
+    check('专注模式完成按钮更新拼豆进度', focusBefore !== focusAfter, `${focusBefore} → ${focusAfter}`)
+    const undoButton = await cdp.eval(`(() => {
+      const b = document.querySelector('.m-immersive-undo')
+      return b ? { disabled: b.disabled, label: b.getAttribute('aria-label') } : null
+    })()`)
+    check('专注模式提供可用的撤销按钮', undoButton?.disabled === false && undoButton.label === '撤销')
+    await cdp.click('.m-immersive-undo')
+    await cdp.waitFor(`${textOf('.m-topbar-pct')} !== ${JSON.stringify(focusAfter)}`, 5000, '专注模式撤销进度更新')
+    const focusUndone = await cdp.eval(textOf('.m-topbar-pct'))
+    check('专注模式撤销按钮恢复上一进度', focusUndone === focusBefore, `${focusAfter} → ${focusUndone}`)
+    await cdp.shot('mobile-focus.png')
+    await cdp.click('.m-immersive-exit')
+    await cdp.waitFor(`!document.querySelector('.app.is-immersive')`, 5000, '按钮退出专注模式')
+    check('退出按钮恢复普通界面', !(await cdp.eval(`!!document.querySelector('.app.is-immersive')`)))
+    checkCanvasClear(await cdp.eval(LAYOUT), '退出专注模式后抽屉不遮住图纸')
+    await cdp.click('.m-focus-toggle')
+    await cdp.waitFor(`!!document.querySelector('.app.is-immersive')`, 5000, '再次进入专注模式')
+    await cdp.escape()
+    await cdp.waitFor(`!document.querySelector('.app.is-immersive')`, 5000, 'Escape 退出专注模式')
+    check('Escape 键退出专注模式', !(await cdp.eval(`!!document.querySelector('.app.is-immersive')`)))
+
     /* ---- 7. 切「颜色」标签：自动展开并显示颜色列表 ---- */
-    await cdp.eval(clickIn('.m-tab', '颜色'))
+    await cdp.click('#mobile-tab-colors')
     await sleep(600)
     const colorsState = await cdp.eval(`(() => ({
       expanded: !!document.querySelector('.m-drawer.expanded'),
@@ -245,15 +369,29 @@ async function main() {
     await cdp.shot('mobile-3-colors.png')
 
     /* ---- 8. 切「显示」标签：网格/色号开关在这里 ---- */
-    await cdp.eval(clickIn('.m-tab', '显示'))
+    await cdp.click('#mobile-tab-display')
     await sleep(600)
     const displayOk = await cdp.eval(
       `!!document.querySelector('.m-drawer-body .settings .radio-row')`,
     )
     check('「显示」抽屉里有显示设置（手机端从画布条移到了这里）', displayOk === true)
+    const displayLabels = await cdp.eval(`Array.from(document.querySelectorAll('.settings-display-grid label')).map((e) => e.textContent.trim())`)
+    check('显示面板包含网格、色号和分区线开关',
+      displayLabels.length === 3 && ['网格', '色号', '分区线'].every((label) => displayLabels.includes(label)), displayLabels.join(' / '))
+    for (let i = 0; i < 3; i++) {
+      const selector = `.settings-display-grid label:nth-child(${i + 1}) input`
+      const initial = await cdp.eval(`document.querySelector(${JSON.stringify(selector)}).checked`)
+      await cdp.click(selector)
+      await cdp.waitFor(`document.querySelector(${JSON.stringify(selector)}).checked === ${!initial}`, 5000, `${displayLabels[i]}开关切换`)
+      const changed = await cdp.eval(`document.querySelector(${JSON.stringify(selector)}).checked`)
+      check(`${displayLabels[i]}开关切换 checked 状态`, changed !== initial, `${initial} → ${changed}`)
+      await cdp.click(selector)
+      await cdp.waitFor(`document.querySelector(${JSON.stringify(selector)}).checked === ${initial}`, 5000, `${displayLabels[i]}开关恢复`)
+      check(`${displayLabels[i]}开关可以恢复`, (await cdp.eval(`document.querySelector(${JSON.stringify(selector)}).checked`)) === initial)
+    }
 
     /* ---- 9. 切回「指引」：收起回紧凑条 ---- */
-    await cdp.eval(clickIn('.m-tab', '指引'))
+    await cdp.click('#mobile-tab-guide')
     await sleep(500)
     const backToGuide = await cdp.eval(`(() => ({
       compact: !!document.querySelector('.m-compact'),
@@ -266,7 +404,7 @@ async function main() {
     )
 
     /* ---- 10. 手动展开：出现完整指引面板，且能滚 ---- */
-    await cdp.eval(clickIn('.m-drawer-toggle', '展开'))
+    await cdp.click('.m-drawer-toggle')
     await sleep(600)
     const expandedState = await cdp.eval(`(() => {
       const b = document.querySelector('.m-drawer-body');
@@ -279,9 +417,57 @@ async function main() {
     })()`)
     check(
       '展开后出现完整指引面板',
-      expandedState.expanded && expandedState.guide && expandedState.h > 200,
+      expandedState.expanded && expandedState.guide && expandedState.scrollable && expandedState.h > 200,
       `面板高 ${expandedState.h}px`,
     )
+    const dialogFocus = await cdp.eval(`(() => {
+      const dialog = document.querySelector('.m-drawer[role="dialog"]')
+      const active = document.activeElement
+      return {
+        dialog: !!dialog,
+        modal: dialog?.getAttribute('aria-modal') === 'true',
+        focusedInside: !!dialog && dialog.contains(active),
+        focusedSelector: active?.className ?? active?.tagName ?? '',
+      }
+    })()`)
+    check('展开抽屉声明 dialog 并把焦点送入面板',
+      dialogFocus.dialog && dialogFocus.modal && dialogFocus.focusedInside,
+      `${dialogFocus.focusedSelector}`)
+    const focusTrap = await cdp.eval(`(() => {
+      const dialog = document.querySelector('.m-drawer[role="dialog"]')
+      const controls = [...(dialog?.querySelectorAll('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled)') ?? [])]
+        .filter((element) => element.getClientRects().length > 0)
+      controls[controls.length - 1]?.focus()
+      return { first: controls[0]?.className ?? '', last: controls.at(-1)?.className ?? '', count: controls.length }
+    })()`)
+    await cdp.tab()
+    const wrappedForward = await cdp.eval(`(() => {
+      const dialog = document.querySelector('.m-drawer[role="dialog"]')
+      const controls = [...(dialog?.querySelectorAll('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled)') ?? [])]
+        .filter((element) => element.getClientRects().length > 0)
+      return controls.length > 0 && document.activeElement === controls[0]
+    })()`)
+    check('Tab 在抽屉末尾循环回第一个控件', wrappedForward, `${focusTrap.last} → ${focusTrap.first}`)
+    await cdp.eval(`(() => {
+      const dialog = document.querySelector('.m-drawer[role="dialog"]')
+      const controls = [...(dialog?.querySelectorAll('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled)') ?? [])]
+        .filter((element) => element.getClientRects().length > 0)
+      controls[0]?.focus()
+    })()`)
+    await cdp.tab(true)
+    const wrappedBackward = await cdp.eval(`(() => {
+      const dialog = document.querySelector('.m-drawer[role="dialog"]')
+      const controls = [...(dialog?.querySelectorAll('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled)') ?? [])]
+        .filter((element) => element.getClientRects().length > 0)
+      return controls.length > 0 && document.activeElement === controls.at(-1)
+    })()`)
+    check('Shift+Tab 在抽屉开头循环回最后一个控件', wrappedBackward, `${focusTrap.first} → ${focusTrap.last}`)
+    await cdp.click('.m-drawer-toggle')
+    await cdp.waitFor(`!document.querySelector('.m-drawer.expanded')`, 5000, '焦点测试关闭抽屉')
+    const restoredFocus = await cdp.eval(`document.activeElement?.classList?.contains('m-drawer-toggle') && document.activeElement?.getAttribute('aria-expanded') === 'false'`)
+    check('关闭抽屉后焦点恢复到展开按钮', restoredFocus)
+    await cdp.click('.m-drawer-toggle')
+    await cdp.waitFor(`!!document.querySelector('.m-drawer.expanded')`, 5000, '重新打开抽屉')
     await cdp.shot('mobile-4-guide-expanded.png')
 
     /* ---- 11. 展开时画布仍然可见（不是被完全盖住） ---- */
@@ -297,6 +483,75 @@ async function main() {
       canvasStillVisible >= 80,
       `画布可见 ${canvasStillVisible}px`,
     )
+    const backdrop = await cdp.eval(`(() => {
+      const element = document.querySelector('.m-drawer-backdrop');
+      const drawer = document.querySelector('.m-drawer');
+      if (!element || !drawer) return null;
+      const rect = element.getBoundingClientRect();
+      return { label: element.getAttribute('aria-label'),
+        x: innerWidth / 2, y: Math.max(1, drawer.getBoundingClientRect().top / 2),
+        full: rect.width >= innerWidth && rect.height >= innerHeight };
+    })()`)
+    check('展开抽屉提供有名称的全屏遮罩', backdrop?.full && backdrop.label === '关闭控制面板')
+    if (backdrop) {
+      const point = { x: backdrop.x, y: backdrop.y }
+      await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', button: 'left', clickCount: 1, ...point })
+      await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', button: 'left', clickCount: 1, ...point })
+      await cdp.waitFor(`!document.querySelector('.m-drawer.expanded')`, 5000, '遮罩关闭抽屉')
+      check('点击画布上方遮罩关闭控制面板', !(await cdp.eval(`!!document.querySelector('.m-drawer-backdrop')`)))
+      checkCanvasClear(await cdp.eval(LAYOUT), '遮罩关闭抽屉后图纸底部无遮挡')
+    }
+
+    /* ---- 手机窄屏与平板使用同一操作外壳且不溢出 ---- */
+    for (const width of [320, 360, 390, 900]) {
+      await cdp.send('Emulation.setDeviceMetricsOverride', {
+        width, height: width === 900 ? 1000 : 844, deviceScaleFactor: 2, mobile: true,
+      })
+      await sleep(350)
+      const responsive = await cdp.eval(LAYOUT)
+      check(`${width}px 工作界面没有横向溢出`, responsive.scrollW <= responsive.clientW + 1,
+        `scrollW ${responsive.scrollW} / clientW ${responsive.clientW}`)
+      check(`${width}px 使用移动端外壳`, await cdp.eval(`!!document.querySelector('.app.mobile')`))
+      checkCanvasClear(responsive, `${width}px 收起抽屉不遮住图纸`)
+      await cdp.click('#mobile-tab-colors')
+      await cdp.waitFor(`!!document.querySelector('.m-drawer.expanded')`, 5000, `${width}px 展开颜色面板`)
+      await sleep(250)
+      const expandedWidth = await cdp.eval(LAYOUT)
+      check(`${width}px 展开面板没有横向溢出`, expandedWidth.scrollW <= expandedWidth.clientW + 1,
+        `scrollW ${expandedWidth.scrollW} / clientW ${expandedWidth.clientW}`)
+      await cdp.click('#mobile-tab-guide')
+      await cdp.waitFor(`!document.querySelector('.m-drawer.expanded')`, 5000, `${width}px 收起面板`)
+      if (width === 320 || width === 900) await cdp.shot(`mobile-${width}-guide.png`)
+    }
+    await cdp.send('Emulation.setDeviceMetricsOverride', {
+      width: 844, height: 390, deviceScaleFactor: 2, mobile: true,
+    })
+    await sleep(350)
+    const landscape = await cdp.eval(LAYOUT)
+    check('844×390 横屏没有横向溢出', landscape.scrollW <= landscape.clientW + 1,
+      `scrollW ${landscape.scrollW} / clientW ${landscape.clientW}`)
+    checkCanvasClear(landscape, '横屏收起抽屉不遮住图纸')
+    check('横屏将至少 55% 视口留给图纸画布', landscape.canvas.height >= landscape.vh * 0.55,
+      `画布 ${Math.round(landscape.canvas.height)} / 视口 ${landscape.vh}`)
+    check('横屏收起操作区不超过视口四分之一', landscape.drawer.height <= landscape.vh * 0.25,
+      `抽屉 ${Math.round(landscape.drawer.height)} / 视口 ${landscape.vh}`)
+    const landscapeControls = await cdp.eval(`(() => {
+      const controls = [['.m-compact-complete', 44], ['.m-compact-undo', 44], ['.m-drawer-toggle', 34]];
+      return controls.map(([selector, minimumHeight]) => {
+        const b = document.querySelector(selector);
+        if (!b) return { selector, ok: false, width: 0, height: 0 };
+        const r = b.getBoundingClientRect();
+        return { selector, width: r.width, height: r.height,
+          ok: r.width >= 40 && r.height >= minimumHeight && r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight };
+      });
+    })()`)
+    check('横屏操作保留触控空间且完整位于视口', landscapeControls.every((control) => control.ok),
+      landscapeControls.map((control) => `${control.selector}: ${control.width}×${control.height}`).join(' / '))
+    await cdp.shot('mobile-landscape.png')
+    await cdp.send('Emulation.setDeviceMetricsOverride', {
+      width: 390, height: 844, deviceScaleFactor: 3, mobile: true,
+    })
+    await sleep(300)
 
     /* ---- 12. 无未捕获错误 ---- */
     const errs = await cdp.eval(`window.__mErrors ? window.__mErrors.length : 0`)
