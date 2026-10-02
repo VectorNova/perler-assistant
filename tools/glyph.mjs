@@ -27,6 +27,7 @@ const CDP_PORT = 9900 + Math.floor(Math.random() * 90)
 
 const imgName = path.basename(process.argv[2] ?? '哥伦比亚图纸.png')
 const mergeDist = Number(process.env.MERGE ?? 4)
+const dumpCells = (process.env.DUMP ?? '').split(';').filter(Boolean)
 const argCols = Number(process.argv[3] ?? 0)
 const argRows = Number(process.argv[4] ?? 0)
 const argCell = Number(process.argv[5] ?? 0)
@@ -215,6 +216,22 @@ async function main() {
         });
       }
 
+      // 2b) 调试：原样打印指定格子（不缩放）
+      const dumps = [];
+      for (const spec of ${JSON.stringify(dumpCells)}) {
+        const [dc, dr] = spec.split(',').map(Number);
+        const one = window.__glyph.extractGlyphs(data, grid, { limit: { col: dc, row: dr, cols: 1, rows: 1 } });
+        const cell = one.cells[0];
+        if (!cell) continue;
+        dumps.push({
+          col: dc, row: dr,
+          fill: window.__glyph.fillHex(cell),
+          raw: window.__glyph.rawMaskToText(cell),
+          norm: window.__glyph.maskToText(cell),
+          bw: cell.bw, bh: cell.bh,
+        });
+      }
+
       // 3) 全图统计
       const all = window.__glyph.extractGlyphs(data, grid);
       const charCount = {};
@@ -345,7 +362,7 @@ async function main() {
         W, H, how, grid: { cols: grid.cols, rows: grid.rows, cellW: Number(grid.cellW.toFixed(2)),
                            cellH: Number(grid.cellH.toFixed(2)), offsetX: Number(grid.offsetX.toFixed(1)),
                            offsetY: Number(grid.offsetY.toFixed(1)) },
-        samples, charCount,
+        samples, charCount, dumps,
         withText: all.withText, totalChars: all.totalChars, cells: all.cells.length,
         msCluster: Math.round(msCluster), msLabel: Math.round(msLabel),
         classes: cluster.classes.map((c) => ({ id: c.id, count: c.count, text: window.__glyph.classToText(c.bits) })),
@@ -363,6 +380,19 @@ async function main() {
       `格距 ${out.grid.cellW} × ${out.grid.cellH}  原点 ${out.grid.offsetX},${out.grid.offsetY}`)
     console.log(`格子总数 ${out.cells}   有文字 ${out.withText}   切出字符 ${out.totalChars}`)
     console.log(`每格字符数分布：${JSON.stringify(out.charCount)}`)
+
+    if (out.dumps && out.dumps.length) {
+      for (const d of out.dumps) {
+        console.log(`\n=== 格子 [${d.col},${d.row}]  填色 ${d.fill}  格内尺寸 ${d.bw}×${d.bh} ===`)
+        console.log('  ① 原样像素（不缩放）：')
+        for (const l of d.raw) console.log('    ' + l)
+        console.log('  ② 缩放到 10×14 之后（每个字符）：')
+        const cols = d.norm.map((s) => s.split('\n'))
+        for (let i = 0; i < 14; i++) {
+          console.log('    ' + cols.map((c) => c[i] ?? '').join('   '))
+        }
+      }
+    }
 
     console.log(`\n=== 聚类 ===`)
     console.log(`字形类 ${out.classes.length} 个（耗时 ${out.msCluster}ms）`)

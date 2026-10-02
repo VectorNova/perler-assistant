@@ -2,6 +2,7 @@ import { detectGrid } from '../src/lib/gridDetect'
 import {
   extractGlyphs,
   maskToText,
+  rawMaskToText,
   fillHex,
   clusterChars,
   solveGroups,
@@ -15,6 +16,7 @@ import { PALETTE, codeOf, indicesInSystem } from '../src/lib/color'
   detectGrid,
   extractGlyphs,
   maskToText,
+  rawMaskToText,
   fillHex,
   clusterChars,
   solveGroups,

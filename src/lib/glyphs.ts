@@ -252,6 +252,23 @@ export function maskToText(g: CellGlyph): string[] {
   })
 }
 
+/**
+ * 调试用：把格子的掩码按**原始分辨率**画出来（不缩放）。
+ *
+ * 为什么要这个：把字缩放到统一的 10×14 再比较，会丢掉小字之间的差别
+ * （实测 6 和 8 被压成了同一个形状）。要看清楚到底丢了什么，
+ * 就得先看缩放之前的原样像素。
+ */
+export function rawMaskToText(g: CellGlyph): string[] {
+  const out: string[] = []
+  for (let y = 0; y < g.bh; y++) {
+    let s = ''
+    for (let x = 0; x < g.bw; x++) s += g.mask[y * g.bw + x] ? '#' : '.'
+    out.push(s)
+  }
+  return out
+}
+
 /** 该格填色的 HEX，便于和色板对照 */
 export function fillHex(g: CellGlyph): string {
   return rgbToHex(g.fill)
