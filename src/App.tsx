@@ -19,6 +19,12 @@ import {
 } from './types'
 import { blankCount, buildPattern, derivePlan, hashImage, rawCounts } from './lib/pattern'
 import {
+  CELL_BACKGROUND,
+  CELL_CLOSE_COLORS,
+  CELL_LOW_PURITY,
+  lowConfidenceCells,
+} from './lib/pattern'
+import {
   blobAt,
   buildSteps,
   pickRegionIndex,
@@ -585,6 +591,9 @@ export default function App() {
               cells: res.pattern.cells,
               blank: res.pattern.blank,
               purity: res.pattern.purity,
+              second: res.pattern.second,
+              margin: res.pattern.margin,
+              flags: res.pattern.flags,
               pageBg: res.pattern.pageBg,
             },
             // 色板约束存在 settings 里，和识别结果一起更新（封面也要跟着重画）
@@ -664,6 +673,9 @@ export default function App() {
             cells: res.pattern.cells,
             blank: res.pattern.blank,
             purity: res.pattern.purity,
+            second: res.pattern.second,
+            margin: res.pattern.margin,
+            flags: res.pattern.flags,
             pageBg: res.pattern.pageBg,
           }
           const pending = pendingImageRef.current
@@ -778,17 +790,21 @@ export default function App() {
    */
   const lowCells = useMemo(() => {
     if (!pattern) return []
-    const cands: { i: number; p: number }[] = []
-    for (let i = 0; i < pattern.purity.length; i++) {
+    // 判据已从「采样纯度低」改成「色号歧义 + 采样纯度低」，见 lowConfidenceCells 的说明：
+    // 高纯度不代表色号对 —— 一个格子可以颜色很纯，却同时贴近两个色号。
+    return lowConfidenceCells(pattern, 400)
+  }, [pattern])
+
+  /** 按原因分类，给「识别质量」面板显示 —— 让「哪里需要核对」有明确理由 */
+  const lowReasons = useMemo(() => {
+    const out = { ambiguous: 0, lowPurity: 0, background: 0 }
+    if (!pattern?.flags) return out
+    for (let i = 0; i < pattern.flags.length; i++) {
       if (pattern.cells[i] === EMPTY || pattern.blank[i]) continue
-      cands.push({ i, p: pattern.purity[i] })
-    }
-    if (cands.length === 0) return []
-    cands.sort((a, b) => a.p - b.p)
-    const want = Math.min(400, Math.max(10, Math.round(cands.length * 0.02)))
-    const out: number[] = []
-    for (let k = 0; k < want && k < cands.length; k++) {
-      if (cands[k].p < 0.45) out.push(cands[k].i)
+      const f = pattern.flags[i]
+      if (f & CELL_CLOSE_COLORS) out.ambiguous++
+      if (f & CELL_LOW_PURITY) out.lowPurity++
+      if (f & CELL_BACKGROUND) out.background++
     }
     return out
   }, [pattern])
@@ -1194,6 +1210,10 @@ export default function App() {
           cells: rec.cells,
           blank: rec.blank,
           purity: rec.purity && rec.purity.length === rec.cells.length ? rec.purity : new Float32Array(n),
+          // 旧项目没有这三个字段 —— 置空即可，界面会降级到只看 purity
+          second: rec.second && rec.second.length === rec.cells.length ? rec.second : undefined,
+          margin: rec.margin && rec.margin.length === rec.cells.length ? rec.margin : undefined,
+          flags: rec.flags && rec.flags.length === rec.cells.length ? rec.flags : undefined,
           pageBg: rec.pageBg,
           imageUrl: '',
           createdAt: meta.createdAt,
@@ -1692,6 +1712,7 @@ export default function App() {
         )
       }}
       lowCount={lowCells.length}
+      lowReasons={lowReasons}
       lowCursor={lowCursor}
       onJumpLow={() => {
         if (lowCells.length === 0) return

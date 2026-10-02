@@ -64,6 +64,14 @@ export interface ProjectPattern {
   cells: Int16Array
   blank: Uint8Array
   purity: Float32Array
+  /**
+   * 识别证据：每格的第二候选色号、第一二候选的色差差距、问题标记位。
+   * 见 types.ts 的说明。可选是因为旧项目里没有这三个字段，
+   * 读到时界面需要降级处理（只剩 purity 可用）。
+   */
+  second?: Int16Array
+  margin?: Float32Array
+  flags?: Uint8Array
   pageBg: RGB
 }
 

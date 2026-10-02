@@ -4,8 +4,6 @@ import {
   colorCacheKey,
   deltaE2000,
   nearestAmong,
-  nearestAmongWithDistance,
-  nearestPaletteIndex,
   rgbToLab,
 } from './color'
 import { estimatePageBackground } from './gridDetect'
@@ -216,6 +214,82 @@ function clusterByColor(
   return { comp, groups, repRgb }
 }
 
+/** 一个颜色在候选色号上的排名：前两名 + 各自的色差 */
+interface Rank {
+  first: number
+  firstD: number
+  second: number
+  secondD: number
+  /** 是否用了「图例之外的颜色」（只有显式打开该开关时才可能为 true） */
+  foreignUsed: boolean
+}
+
+/** 在给定候选集里排前两名 */
+function rankAmong(c: RGB, candidates: readonly number[]): Rank {
+  const lab = rgbToLab(c)
+  let b1 = -1
+  let d1 = Infinity
+  let b2 = -1
+  let d2 = Infinity
+  for (const i of candidates) {
+    const d = deltaE2000(lab, PALETTE[i].lab)
+    if (d < d1) {
+      b2 = b1
+      d2 = d1
+      b1 = i
+      d1 = d
+    } else if (d < d2) {
+      b2 = i
+      d2 = d
+    }
+  }
+  return { first: b1, firstD: d1, second: b2, secondD: d2, foreignUsed: false }
+}
+
+/** 在全色板里排前两名 */
+function rankAllPalette(c: RGB): Rank {
+  const lab = rgbToLab(c)
+  let b1 = -1
+  let d1 = Infinity
+  let b2 = -1
+  let d2 = Infinity
+  for (let i = 0; i < PALETTE.length; i++) {
+    const d = deltaE2000(lab, PALETTE[i].lab)
+    if (d < d1) {
+      b2 = b1
+      d2 = d1
+      b1 = i
+      d1 = d
+    } else if (d < d2) {
+      b2 = i
+      d2 = d
+    }
+  }
+  return { first: b1, firstD: d1, second: b2, secondD: d2, foreignUsed: false }
+}
+
+/* ------------------------------------------------------------------ */
+/* 每格的问题标记                                                       */
+/* ------------------------------------------------------------------ */
+
+/** 采样纯度偏低：主色占比小，可能压在网格线上、或有反锯齿/水印 */
+export const CELL_LOW_PURITY = 1
+/** 色号歧义：第一、第二候选的色差差距很小，颜色上分不出来 */
+export const CELL_CLOSE_COLORS = 2
+/** 背景候选：颜色接近页面底色且与外沿连通，可能其实是白色豆子 */
+export const CELL_BACKGROUND = 4
+
+/** 纯度低于此值算「低纯度」 */
+export const LOW_PURITY_THRESHOLD = 0.55
+/**
+ * margin 低于此值算「色号歧义」。
+ *
+ * margin = 第二候选色差 − 第一候选色差（CIEDE2000）。
+ * 2.0 是保守起点：实测用户图纸里 D17/C27、D20/D7 这种串位都落在很小的 margin 上，
+ * 但**这个阈值应该用真实失败图纸校准**，目前只是让歧义格子浮出来给人看。
+ */
+export const CLOSE_COLORS_MARGIN = 2
+
 export function buildPattern(
   img: ImageData,
   grid: GridSpec,
@@ -232,13 +306,47 @@ export function buildPattern(
   const cells = new Int16Array(n)
   const blank = new Uint8Array(n)
   const bgLike = new Uint8Array(n)
-  // 受约束匹配要对大量格子重复求色差，按量化键缓存
-  const constrainedCache = new Map<number, number>()
+  const second = new Int16Array(n).fill(-1)
+  const margin = new Float32Array(n)
+  // 一个颜色只需要算一次排名，按完整颜色缓存（见 colorCacheKey 的说明）
+  const rankCache = new Map<number, Rank>()
   let unmatched = 0
   let foreign = 0
 
   for (let i = 0; i < n; i++) {
     if (purity[i] <= 0) cells[i] = EMPTY
+  }
+
+  /**
+   * 把一个颜色排到候选色号上，返回前两名与它们的色差。
+   *
+   * 为什么必须留第二名：`purity` 只说明采样区域颜色是否一致，
+   * 而**高纯度不代表色号对** —— 一个格子可以非常纯，却同时贴近两个色号
+   * （实测用户图纸里 D17 被认成 C27、D20 被认成 D7 都属于这种）。
+   * 真正该看的是第一候选比第二候选好多少，也就是 secondD - firstD。
+   */
+  const rankColor = (c: RGB): Rank => {
+    const key = colorCacheKey(c)
+    const hit = rankCache.get(key)
+    if (hit) return hit
+    let r: Rank
+    if (!allowed) {
+      r = rankAllPalette(c)
+    } else {
+      r = rankAmong(c, allowed)
+      if (!Number.isFinite(r.firstD) || r.first >= PALETTE.length) {
+        const g = rankAllPalette(c)
+        r = { ...r, first: g.first, firstD: g.firstD }
+      }
+      if (r.firstD > unmatchedTol && opts.allowForeignColors) {
+        // 只有显式打开「允许图例之外的颜色」才回退到全色板；
+        // 默认严格只用图例 —— 硬塞一个图例外的色号就等于凭空造色号
+        const g = rankAllPalette(c)
+        r = { first: g.first, firstD: g.firstD, second: r.first, secondD: r.firstD, foreignUsed: true }
+      }
+    }
+    rankCache.set(key, r)
+    return r
   }
 
   /**
@@ -250,39 +358,35 @@ export function buildPattern(
    * 3 对颜色正好同桶（G15 #FCF9E0 / H21 #FFFBE1、H2 #FEFFFF / T1 #FFFFFF、Q4 / R11），
    * 于是同一种输入、处理顺序不同就得到不同色号 —— 可复现性问题。
    */
-  const mapColor = (c: RGB): number => {
-    if (!allowed) return nearestPaletteIndex(c)
-    const key = colorCacheKey(c)
-    const hit = constrainedCache.get(key)
-    if (hit !== undefined) return hit
-    const near = nearestAmongWithDistance(c, allowed)
-    let use = near.index
-    if (!Number.isFinite(near.delta) || use >= PALETTE.length) use = nearestPaletteIndex(c)
-    if (near.delta > unmatchedTol) {
-      unmatched++
-      if (opts.allowForeignColors) {
-        use = nearestPaletteIndex(c)
-        foreign++
-      }
-      // 默认不回退：图例是这张图纸的权威，硬塞一个图例外的色号
-      // 就等于凭空造出图纸上没有的颜色（用户反馈的 P1/R8 就是这么来的）
-    }
-    constrainedCache.set(key, use)
-    return use
-  }
-
   let mergedRegions = 0
   if (opts.disableRegionConsistency) {
     for (let i = 0; i < n; i++) {
       if (purity[i] <= 0) continue
-      cells[i] = mapColor([rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2]])
+      const c: RGB = [rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2]]
+      const r = rankColor(c)
+      cells[i] = r.first
+      second[i] = r.second
+      margin[i] = r.secondD - r.firstD
+      if (allowed && r.firstD > unmatchedTol) unmatched++
+      if (r.foreignUsed) foreign++
     }
   } else {
     // 先按颜色并成块，再整块用一个色号 —— 区域内部的随机翻转就消失了
     const { groups, repRgb } = clusterByColor(rgb, purity, grid.cols, grid.rows)
     for (let k = 0; k < groups.length; k++) {
-      const idx = mapColor(repRgb[k])
-      for (const i of groups[k]) cells[i] = idx
+      const r = rankColor(repRgb[k])
+      const size = groups[k].length
+      // 越界计数按**格子**累计（用户看到的是「有多少格」），
+      // 但排名本身按颜色算一次就够了。
+      if (allowed && r.firstD > unmatchedTol) unmatched += size
+      if (r.foreignUsed) foreign += size
+      for (const i of groups[k]) {
+        cells[i] = r.first
+        // 整块共用一个色号，所以候选与 margin 也整块共享 —— 这符合语义：
+        // 决定是**按块**做的，不是按格。
+        second[i] = r.second
+        margin[i] = r.secondD - r.firstD
+      }
     }
     mergedRegions = groups.length
   }
@@ -306,6 +410,17 @@ export function buildPattern(
     }
   }
 
+  // 每格的问题标记：让「哪里需要人工核对」有明确理由，而不是只给一个分数
+  const flags = new Uint8Array(n)
+  for (let i = 0; i < n; i++) {
+    if (cells[i] === EMPTY) continue
+    let f = 0
+    if (purity[i] < LOW_PURITY_THRESHOLD) f |= CELL_LOW_PURITY
+    if (second[i] >= 0 && margin[i] < CLOSE_COLORS_MARGIN) f |= CELL_CLOSE_COLORS
+    if (bgLike[i]) f |= CELL_BACKGROUND
+    flags[i] = f
+  }
+
   const pattern: Pattern = {
     id: opts.imageHash,
     name: opts.name,
@@ -315,6 +430,9 @@ export function buildPattern(
     cells,
     blank,
     purity,
+    second,
+    margin,
+    flags,
     pageBg,
     imageUrl: opts.imageUrl,
     createdAt: Date.now(),
@@ -430,12 +548,33 @@ export function derivePlan(
   return { cells, counts, colors, total, remapped }
 }
 
-/** 低置信度格子（采样纯度偏低，可能是网格没对准） */
-export function lowConfidenceCells(pattern: Pattern, threshold = 0.55): number[] {
-  const out: number[] = []
-  for (let i = 0; i < pattern.purity.length; i++) {
-    if (pattern.blank[i]) continue
-    if (pattern.cells[i] !== EMPTY && pattern.purity[i] < threshold) out.push(i)
+/**
+ * 需要人工核对的格子。
+ *
+ * 判据从「采样纯度低」改成「**色号歧义 + 采样纯度低**」，并按严重程度排序：
+ *
+ * - 原来只看 purity，但**高纯度不代表色号对** —— 一个格子可以颜色非常纯，
+ *   却同时贴近两个色号（实测 D17↔C27、D20↔D7 就是这种），purity 完全看不出来。
+ * - 现在优先给 margin 最小的格子（第一、第二候选几乎一样近），
+ *   因为那才是「可能认错」的直接证据；低纯度的排在后面。
+ *
+ * 旧项目没有 flags/margin 字段时回退到按 purity 判断。
+ */
+export function lowConfidenceCells(pattern: Pattern, limit = 400): number[] {
+  const cands: { i: number; key: number }[] = []
+  const hasEvidence = pattern.margin !== undefined && pattern.flags !== undefined
+  for (let i = 0; i < pattern.cells.length; i++) {
+    if (pattern.cells[i] === EMPTY || pattern.blank[i]) continue
+    if (hasEvidence) {
+      const f = pattern.flags![i]
+      if ((f & (CELL_CLOSE_COLORS | CELL_LOW_PURITY)) === 0) continue
+      // 歧义格子的排序键 = margin（越小越可疑）；低纯度但无歧义的给一个较大的键
+      const isAmbig = (f & CELL_CLOSE_COLORS) !== 0
+      cands.push({ i, key: isAmbig ? pattern.margin![i] : CLOSE_COLORS_MARGIN + pattern.purity[i] })
+    } else if (pattern.purity[i] < LOW_PURITY_THRESHOLD) {
+      cands.push({ i, key: pattern.purity[i] })
+    }
   }
-  return out
+  cands.sort((a, b) => a.key - b.key)
+  return cands.slice(0, limit).map((c) => c.i)
 }

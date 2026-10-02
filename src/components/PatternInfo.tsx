@@ -24,6 +24,8 @@ interface Props {
   onPaletteSystem: (id: PaletteSystemId) => void
 
   lowCount: number
+  /** 按原因分类的待核对格子数（色号歧义 / 纯度低 / 接近背景） */
+  lowReasons: { ambiguous: number; lowPurity: number; background: number }
   lowCursor: number
   onJumpLow: () => void
   showLowConf: boolean
@@ -62,6 +64,7 @@ export default function PatternInfo({
   paletteSystems,
   onPaletteSystem,
   lowCount,
+  lowReasons,
   lowCursor,
   onJumpLow,
   showLowConf,
@@ -189,14 +192,39 @@ export default function PatternInfo({
       <h3>识别质量</h3>
       {lowCount === 0 ? (
         <p className="hint small">
-          每一格的采样纯度都很高，没有需要人工核对的格子。
-          （从本地进度恢复时无法重新评估纯度，所以这里会显示为 0。）
+          没有需要人工核对的格子：色号都分得很开，采样纯度也够。
+          （从本地进度恢复的旧项目没有识别证据，这里会显示为 0。）
         </p>
       ) : (
         <>
           <p className="hint small">
-            有 <b>{lowCount}</b> 格的主色占比偏低（可能压在网格线上、或有反锯齿/水印）。
-            画布上用琥珀色角标标了出来，建议挨个核对一遍。
+            有 <b>{lowCount}</b> 格建议核对，按可疑程度排序，画布上用琥珀色角标标了出来。
+          </p>
+          {(lowReasons.ambiguous > 0 || lowReasons.lowPurity > 0 || lowReasons.background > 0) && (
+            <ul className="info-list">
+              {lowReasons.ambiguous > 0 && (
+                <li>
+                  <span>色号分不开（第一第二候选几乎一样近）</span>
+                  <b>{lowReasons.ambiguous} 格</b>
+                </li>
+              )}
+              {lowReasons.lowPurity > 0 && (
+                <li>
+                  <span>采样纯度低（可能压在网格线/反锯齿上）</span>
+                  <b>{lowReasons.lowPurity} 格</b>
+                </li>
+              )}
+              {lowReasons.background > 0 && (
+                <li>
+                  <span>颜色接近背景（可能其实是白色豆子）</span>
+                  <b>{lowReasons.background} 格</b>
+                </li>
+              )}
+            </ul>
+          )}
+          <p className="hint small">
+            「色号分不开」是<b>颜色本身</b>的问题：图纸上这两种颜色太接近，
+            只靠填色分不出谁是谁。真正可靠的依据是格子里印的色号。
           </p>
           <div className="btn-row">
             <button type="button" className="btn" onClick={onJumpLow}>

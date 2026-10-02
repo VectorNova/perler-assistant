@@ -944,6 +944,28 @@ input:focus {
   z-index: 2;
 }
 
+/* 识别质量的分类清单（色号歧义 / 纯度低 / 接近背景） */
+.info-list {
+  list-style: none;
+  padding: 0;
+  margin: 6px 0 8px;
+  font-size: 13px;
+}
+
+.info-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 4px 0;
+  border-bottom: 1px dashed var(--border);
+  color: var(--text-2);
+}
+
+.info-list li b {
+  color: var(--text-1);
+  white-space: nowrap;
+}
+
 /* 分段控件（色号体系 221/291 这类二选一） */
 .seg-row {
   display: flex;

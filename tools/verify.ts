@@ -7,6 +7,7 @@ import { writeFileSync, mkdirSync } from 'node:fs'
 import { PALETTE, deltaE2000, rgbToLab } from '../src/lib/color'
 import { detectGrid, estimatePageBackground, debugProfiles } from '../src/lib/gridDetect'
 import { buildPattern, derivePlan, rawCounts } from '../src/lib/pattern'
+import { CELL_CLOSE_COLORS, CLOSE_COLORS_MARGIN, lowConfidenceCells } from '../src/lib/pattern'
 import { buildRegions, buildSteps } from '../src/lib/order'
 import { PALETTE, codeOf, colorCacheKey, formatColorCode, indicesInSystem, nearestPaletteIndex, resolveColorCodes } from '../src/lib/color'
 import { EMPTY, type GridSpec, type Region, type RegionOrderMode } from '../src/types'
@@ -768,6 +769,97 @@ function verifyPaletteSystem(c: Case, spec: CaseSpec): Report {
   }
 }
 
+/* ----------------------------- 识别证据校验 ----------------------------- */
+
+/**
+ * 「每格要留下色号歧义的证据」的回归测试。
+ *
+ * 背景：原来只有 purity（采样纯度）一个置信度，但**高纯度不代表色号对** ——
+ * 一个格子可以颜色非常纯，却同时贴近两个色号。
+ * 实测用户图纸里 D17→C27、D20→D7 这类串位，purity 完全看不出来。
+ *
+ * 现在每格额外保存第二候选色号与 margin（第一第二候选的色差差距），
+ * 并把「待核对」的判据从 purity 换成 margin + purity。
+ */
+function verifyCellEvidence(c: Case, spec: CaseSpec): Report {
+  const img = toImageData(c)
+  const grid: GridSpec = {
+    offsetX: c.originX,
+    offsetY: c.originY,
+    cellW: spec.cell,
+    cellH: spec.cell,
+    cols: spec.cols,
+    rows: spec.rows,
+  }
+  const res = buildPattern(img, grid, {
+    name: 'ev',
+    imageUrl: '',
+    imageHash: 'ev',
+    dropBackground: false,
+  })
+  const p = res.pattern
+  const n = p.cells.length
+  const hasAll =
+    p.second !== undefined &&
+    p.margin !== undefined &&
+    p.flags !== undefined &&
+    p.second.length === n &&
+    p.margin.length === n &&
+    p.flags.length === n
+
+  // margin 必须等于「第二候选色差 − 第一候选色差」，且非负
+  let marginSane = 0
+  let marginBad = 0
+  let ambigCells = 0
+  let flagsAgree = 0
+  if (hasAll) {
+    for (let i = 0; i < n; i++) {
+      if (p.cells[i] === EMPTY) continue
+      const m = p.margin![i]
+      if (m >= 0 && Number.isFinite(m)) marginSane++
+      else marginBad++
+      if (p.second![i] >= 0 && m < CLOSE_COLORS_MARGIN) {
+        if ((p.flags![i] & CELL_CLOSE_COLORS) !== 0) flagsAgree++
+        else flagsAgree-- // 该标歧义却没标
+      }
+      if ((p.flags![i] & CELL_CLOSE_COLORS) !== 0) ambigCells++
+    }
+  }
+
+  // 低置信度格子应当排在前面的是「歧义」的，而不是纯按纯度
+  const low = lowConfidenceCells(p, 50)
+  const lowAreAmbig = low.filter((i) => (p.flags?.[i] ?? 0) & CELL_CLOSE_COLORS).length
+
+  const checks: [string, boolean, string][] = [
+    [
+      '每格都保存了第二候选 / margin / flags',
+      hasAll,
+      hasAll ? `${n} 格，长度全部对齐` : '字段缺失或长度不齐',
+    ],
+    [
+      'margin 全部有限且非负',
+      hasAll && marginBad === 0,
+      hasAll ? `合法 ${marginSane}，异常 ${marginBad}` : '-',
+    ],
+    [
+      '歧义标记与 margin 阈值一致',
+      hasAll && flagsAgree >= 0,
+      hasAll ? `一致 ${flagsAgree} 格，标记为歧义共 ${ambigCells} 格` : '-',
+    ],
+    [
+      '待核对列表优先给出歧义格子',
+      low.length === 0 || lowAreAmbig > 0,
+      low.length === 0 ? '没有待核对格子' : `前 ${low.length} 个里 ${lowAreAmbig} 个是色号歧义`,
+    ],
+  ]
+
+  return {
+    name: '识别证据：每格留下第二候选与 margin（高纯度 ≠ 色号对）',
+    ok: checks.every(([, ok]) => ok),
+    lines: checks.map(([n2, ok, d]) => `  ${ok ? '✓' : '✗'} ${n2} — ${d}`),
+  }
+}
+
 /* ----------------------------- 拼块顺序校验 ----------------------------- */
 
 /**
@@ -1069,6 +1161,13 @@ function main() {
   for (const l of strictRep.lines) console.log('    ' + l)
   console.log('')
   reports.push(strictRep)
+
+  console.log('================ 识别证据 ================\n')
+  const evRep = verifyCellEvidence(renderCase(cases[0], 313), cases[0])
+  console.log(`${evRep.ok ? '✅ PASS' : '❌ FAIL'}  ${evRep.name}`)
+  for (const l of evRep.lines) console.log('    ' + l)
+  console.log('')
+  reports.push(evRep)
 
   console.log('================ 颜色缓存 ================\n')
   const cacheRep = verifyColorCacheKey()
