@@ -8,6 +8,9 @@ dist
 # 我的截图（tools/*.mjs 跑出来的，不进仓库）
 _shots/
 
+# Local full-resolution grid diagnostics, never shipped with the app.
+.grid-diagnostics/
+
 # verify 在项目根目录生成的测试图纸 —— 和 public/samples/*.png 内容重复。
 # 前面必须加 /：裸写 samples/ 会连 public/samples/ 一起忽略掉。
 /samples/

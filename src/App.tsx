@@ -13,6 +13,7 @@ import {
   BRANDS,
   EMPTY,
   type Brand,
+  type ChartRecognition,
   type GridSpec,
   type OrderOptions,
   type Pattern,
@@ -22,6 +23,8 @@ import {
   CELL_BACKGROUND,
   CELL_CLOSE_COLORS,
   CELL_LOW_PURITY,
+  CELL_TEXT_UNCERTAIN,
+  CELL_TEXT_CONFLICT,
   lowConfidenceCells,
 } from './lib/pattern'
 import {
@@ -32,6 +35,7 @@ import {
   regionPendingCells,
 } from './lib/order'
 import { clampGrid, detectGrid, gridFromCellCount } from './lib/gridDetect'
+import { recognizeChart } from './lib/chartOcr'
 import { assetUrl } from './lib/assets'
 import { PALETTE, PALETTE_SYSTEMS, codeOf, indicesInSystem, intersectWithSystem, resolveColorCodes } from './lib/color'
 import type { PaletteSystemId } from './lib/color'
@@ -80,7 +84,7 @@ type Stage = 'upload' | 'calibrate' | 'work'
 type Mode = 'browse' | 'guide'
 type HistoryEntry = { op: 'add' | 'remove'; cells: number[] }
 
-const MAX_WORK_DIM = 4000
+const MAX_IMAGE_PIXELS = 64_000_000
 
 const EMPTY_GRID: GridSpec = { offsetX: 0, offsetY: 0, cellW: 20, cellH: 20, cols: 32, rows: 32 }
 
@@ -109,6 +113,7 @@ export default function App() {
 
   const imgCanvasRef = useRef<HTMLCanvasElement | null>(null)
   const imgDataRef = useRef<ImageData | null>(null)
+  const recognitionCacheRef = useRef<{ image: ImageData; key: string; value: ChartRecognition } | null>(null)
   const [imageToken, setImageToken] = useState(0)
   const [fileName, setFileName] = useState('')
   const [imageHash, setImageHash] = useState('')
@@ -242,6 +247,7 @@ export default function App() {
       excluded: [...excluded],
       codeText,
       allowedIndices,
+      paletteSystem,
       treatBlankAsEmpty,
       dimMode,
       showGrid,
@@ -358,29 +364,48 @@ export default function App() {
 
   /* ------------------------- 读取图纸 ------------------------- */
 
-  /** 把图片 Blob 解码成 ImageData（按 MAX_WORK_DIM 缩放），上传和打开项目都用它 */
+  /** 保留原生像素，避免先缩小再读字导致 6/8 等细节永久丢失。旧项目按原尺寸恢复。 */
   const prepareImageData = useCallback(
-    async (blob: Blob): Promise<{ imgData: ImageData; canvas: HTMLCanvasElement } | null> => {
+    async (blob: Blob, savedSize?: { width: number; height: number }): Promise<{ imgData: ImageData; canvas: HTMLCanvasElement } | null> => {
       const url = URL.createObjectURL(blob)
       try {
         const img = await loadImageElement(url)
         const nw = img.naturalWidth || img.width
         const nh = img.naturalHeight || img.height
         if (!nw || !nh) return null
-        const k = Math.min(1, MAX_WORK_DIM / Math.max(nw, nh))
-        const w = Math.max(1, Math.round(nw * k))
-        const h = Math.max(1, Math.round(nh * k))
-        const cv = document.createElement('canvas')
-        cv.width = w
-        cv.height = h
-        const ctx = cv.getContext('2d', { willReadFrequently: true })
+        const w = savedSize?.width ?? nw
+        const h = savedSize?.height ?? nh
+        if (w * h > MAX_IMAGE_PIXELS) throw new Error('图片超过 6400 万像素，请裁掉图纸外的区域后导入，保留格内文字的原始清晰度。')
+        // 分块读取原始像素，避免手机浏览器的单画布面积限制。
+        const tile = document.createElement('canvas')
+        const ctx = tile.getContext('2d', { willReadFrequently: true })
         if (!ctx) return null
-        ctx.imageSmoothingEnabled = k < 1
-        ctx.imageSmoothingQuality = 'high'
-        ctx.drawImage(img, 0, 0, w, h)
-        return { imgData: ctx.getImageData(0, 0, w, h), canvas: cv }
-      } catch {
-        return null
+        const imgData = new ImageData(w, h)
+        for (let y = 0; y < h; y += 1024) {
+          for (let x = 0; x < w; x += 2048) {
+            const tw = Math.min(2048, w - x)
+            const th = Math.min(1024, h - y)
+            tile.width = tw
+            tile.height = th
+            ctx.imageSmoothingEnabled = w !== nw || h !== nh
+            ctx.imageSmoothingQuality = 'high'
+            ctx.drawImage(img, x * nw / w, y * nh / h, tw * nw / w, th * nh / h, 0, 0, tw, th)
+            const pixels = ctx.getImageData(0, 0, tw, th).data
+            for (let row = 0; row < th; row++) {
+              imgData.data.set(pixels.subarray(row * tw * 4, (row + 1) * tw * 4), ((y + row) * w + x) * 4)
+            }
+          }
+        }
+        tile.width = tile.height = 1
+        // 校准预览单独缩小；网格坐标与识别始终使用上面的原图尺寸。
+        const previewScale = Math.min(1, 2048 / Math.max(w, h))
+        const cv = document.createElement('canvas')
+        cv.width = Math.max(1, Math.round(w * previewScale))
+        cv.height = Math.max(1, Math.round(h * previewScale))
+        const previewCtx = cv.getContext('2d')
+        if (!previewCtx) return null
+        previewCtx.drawImage(img, 0, 0, cv.width, cv.height)
+        return { imgData, canvas: cv }
       } finally {
         URL.revokeObjectURL(url)
       }
@@ -388,8 +413,18 @@ export default function App() {
     [],
   )
 
+  const readChart = useCallback((image: ImageData, spec: GridSpec) => {
+    const key = JSON.stringify(spec)
+    const cached = recognitionCacheRef.current
+    if (cached?.image === image && cached.key === key) return cached.value
+    // 字符先独立解码，体系/图例限制由 buildPattern 检查，不能强迫字形变成唯一候选。
+    const value = recognizeChart(image, spec)
+    recognitionCacheRef.current = { image, key, value }
+    return value
+  }, [])
+
   const loadFile = useCallback(
-    async (file: File) => {
+    async (file: File, existing?: { id: string; name: string; settings: ProjectSettings }) => {
       setBusy(true)
       setError(null)
       setNotice(null)
@@ -403,12 +438,25 @@ export default function App() {
 
         imgCanvasRef.current = cv
         imgDataRef.current = imgData
+        recognitionCacheRef.current = null
         setFileName(file.name)
         setImageHash(hashImage(imgData, file.name))
         setImageToken((x) => x + 1)
 
         // 原图留着用于「重新校准」；封面用识别结果渲染（见 patternThumbDataUrl）
-        if (!currentProjectId) setProjectName(nextProjectName(projects))
+        if (existing) {
+          setCurrentProjectId(existing.id)
+          setProjectName(existing.name)
+          setCodeText(existing.settings.codeText ?? '')
+          setAllowedIndices(existing.settings.allowedIndices ?? null)
+          setPaletteSystem(existing.settings.paletteSystem ?? 'MARD221')
+        } else if (!currentProjectId) {
+          setProjectName(nextProjectName(projects))
+          setCodeText('')
+          setAllowedIndices(null)
+        }
+        setCodeNote(null)
+        setAllowForeignColors(false)
         pendingImageRef.current = { blob: file, name: file.name }
 
         const det = detectGrid(imgData)
@@ -450,12 +498,14 @@ export default function App() {
     if (!imgData) return
     const t = setTimeout(() => {
       try {
+        const allowed = allowedIndices ?? indicesInSystem(paletteSystem)
         const { pattern: p } = buildPattern(imgData, grid, {
           name: fileName,
           imageUrl: '',
           imageHash: 'preview',
           dropBackground: true,
-          allowed: indicesInSystem(paletteSystem),
+          allowed,
+          textRecognition: readChart(imgData, grid),
         })
         const counts = rawCounts(p)
         let blank = blankCount(p)
@@ -465,7 +515,7 @@ export default function App() {
       }
     }, 260)
     return () => clearTimeout(t)
-  }, [stage, grid, fileName, paletteSystem])
+  }, [stage, grid, fileName, paletteSystem, allowedIndices, readChart])
 
   const autoDetect = useCallback(() => {
     const imgData = imgDataRef.current
@@ -524,12 +574,15 @@ export default function App() {
     // 图例给出的是「这张图纸用到的色号」；色号体系给出的是「这套色号表里有哪些」。
     // 两者取交集 —— 粘了图例却选了不对的体系时，明确报出哪些色号对不上。
     let outsideSystem: string[] = []
-    let effective = allowed
+    let effective = allowed ?? indicesInSystem(paletteSystem)
     if (allowed) {
       const cut = intersectWithSystem(allowed, paletteSystem)
       if (cut.kept.length > 0) {
         effective = cut.kept
         outsideSystem = cut.outside.map((i) => codeOf(i, brand))
+      } else {
+        setCodeNote('输入的色号均不在当前色号体系内，请先选择图纸对应的色号体系。')
+        return
       }
     }
     const hadProgress = done.size > 0
@@ -540,9 +593,10 @@ export default function App() {
       dropBackground: treatBlankAsEmpty,
       allowed: effective,
       allowForeignColors,
+      textRecognition: readChart(imgData, pattern.grid),
     })
     setPattern(res.pattern)
-    setAllowedIndices(effective)
+    setAllowedIndices(allowed ? effective : null)
     setDone(new Set())
     setHistory([])
     const parts: string[] = []
@@ -594,10 +648,12 @@ export default function App() {
               second: res.pattern.second,
               margin: res.pattern.margin,
               flags: res.pattern.flags,
+              textConfidence: res.pattern.textConfidence,
+              recognition: res.pattern.recognition,
               pageBg: res.pattern.pageBg,
             },
             // 色板约束存在 settings 里，和识别结果一起更新（封面也要跟着重画）
-            { ...settingsFromState(), allowedIndices: allowed, codeText: text },
+            { ...settingsFromState(), allowedIndices: allowed ? effective : null, codeText: text },
             0,
             false,
             patternThumbDataUrl(res.pattern.cells, res.pattern.grid.cols, res.pattern.grid.rows),
@@ -619,6 +675,9 @@ export default function App() {
     currentProjectId,
     settingsFromState,
     refreshProjects,
+    paletteSystem,
+    allowForeignColors,
+    readChart,
   ])
 
   const confirmCalibration = useCallback(() => {
@@ -632,6 +691,7 @@ export default function App() {
     setTimeout(() => {
       void (async () => {
         try {
+          const candidates = allowedIndices ?? indicesInSystem(paletteSystem)
           const res = buildPattern(imgData, grid, {
             name: fileName,
             imageUrl: '',
@@ -640,7 +700,8 @@ export default function App() {
             // 没粘图例时也不能放开到全色板：先按色号体系收窄。
             // 用户报的「识别出原图没有的 P1、R8」正是这里放开了 291 色导致的 ——
             // 他的图纸是 MARD 221，那 70 个扩展色号在图纸里根本不存在。
-            allowed: allowedIndices ?? indicesInSystem(paletteSystem),
+            allowed: candidates,
+            textRecognition: readChart(imgData, grid),
           })
           setPattern(res.pattern)
           setDone(new Set())
@@ -676,6 +737,8 @@ export default function App() {
             second: res.pattern.second,
             margin: res.pattern.margin,
             flags: res.pattern.flags,
+            textConfidence: res.pattern.textConfidence,
+            recognition: res.pattern.recognition,
             pageBg: res.pattern.pageBg,
           }
           const pending = pendingImageRef.current
@@ -729,6 +792,8 @@ export default function App() {
     detectConfidence,
     settingsFromState,
     refreshProjects,
+    paletteSystem,
+    readChart,
   ])
 
   /* ------------------------- 示例图纸 / URL 参数 ------------------------- */
@@ -792,12 +857,12 @@ export default function App() {
     if (!pattern) return []
     // 判据已从「采样纯度低」改成「色号歧义 + 采样纯度低」，见 lowConfidenceCells 的说明：
     // 高纯度不代表色号对 —— 一个格子可以颜色很纯，却同时贴近两个色号。
-    return lowConfidenceCells(pattern, 400)
+    return lowConfidenceCells(pattern, pattern.cells.length)
   }, [pattern])
 
   /** 按原因分类，给「识别质量」面板显示 —— 让「哪里需要核对」有明确理由 */
   const lowReasons = useMemo(() => {
-    const out = { ambiguous: 0, lowPurity: 0, background: 0 }
+    const out = { ambiguous: 0, lowPurity: 0, background: 0, text: 0, conflict: 0 }
     if (!pattern?.flags) return out
     for (let i = 0; i < pattern.flags.length; i++) {
       if (pattern.cells[i] === EMPTY || pattern.blank[i]) continue
@@ -805,6 +870,8 @@ export default function App() {
       if (f & CELL_CLOSE_COLORS) out.ambiguous++
       if (f & CELL_LOW_PURITY) out.lowPurity++
       if (f & CELL_BACKGROUND) out.background++
+      if (f & CELL_TEXT_UNCERTAIN) out.text++
+      if (f & CELL_TEXT_CONFLICT) out.conflict++
     }
     return out
   }, [pattern])
@@ -1106,6 +1173,14 @@ export default function App() {
 
   /* ------------------------- 持久化 ------------------------- */
 
+  // 串行写入的每一轮都读取最新状态，不能重复使用开始保存时捕获的旧 done。
+  const progressSnapshotRef = useRef<{
+    pattern: Pattern; projectId: string; done: Set<number>; excluded: Set<number>; total: number
+  } | null>(null)
+  if (pattern && currentProjectId) {
+    progressSnapshotRef.current = { pattern, projectId: currentProjectId, done, excluded, total: plan?.total ?? 0 }
+  }
+
   /**
    * 进度保存。
    * done 每次点格子都会变，所以这里做两层节流：
@@ -1119,22 +1194,24 @@ export default function App() {
       st.queued = true
       return
     }
-    if (!pattern || !currentProjectId) return
+    if (!progressSnapshotRef.current) return
     st.saving = true
     try {
       do {
         st.queued = false
-        const flags = new Uint8Array(pattern.cells.length)
-        for (const i of done) {
+        const latest = progressSnapshotRef.current
+        if (!latest) break
+        const flags = new Uint8Array(latest.pattern.cells.length)
+        for (const i of latest.done) {
           if (i >= 0 && i < flags.length) flags[i] = 1
         }
         await saveProjectProgress(
-          currentProjectId,
+          latest.projectId,
           flags,
-          pattern.cells,
-          pattern.blank,
-          excluded,
-          plan?.total ?? 0,
+          latest.pattern.cells,
+          latest.pattern.blank,
+          latest.excluded,
+          latest.total,
         )
       } while (saveStateRef.current.queued)
     } catch (e) {
@@ -1148,7 +1225,7 @@ export default function App() {
     } finally {
       st.saving = false
     }
-  }, [pattern, currentProjectId, done, excluded, plan?.total])
+  }, [])
 
   useEffect(() => {
     if (stage !== 'work' || !pattern || !currentProjectId) return
@@ -1191,6 +1268,9 @@ export default function App() {
       setBusy(true)
       setError(null)
       try {
+        recognitionCacheRef.current = null
+        imgDataRef.current = null
+        imgCanvasRef.current = null
         const [rec, doneBits, meta] = await Promise.all([
           getProjectPattern(id),
           getProjectProgress(id),
@@ -1214,6 +1294,8 @@ export default function App() {
           second: rec.second && rec.second.length === rec.cells.length ? rec.second : undefined,
           margin: rec.margin && rec.margin.length === rec.cells.length ? rec.margin : undefined,
           flags: rec.flags && rec.flags.length === rec.cells.length ? rec.flags : undefined,
+          textConfidence: rec.textConfidence?.length === rec.cells.length ? rec.textConfidence : undefined,
+          recognition: rec.recognition,
           pageBg: rec.pageBg,
           imageUrl: '',
           createdAt: meta.createdAt,
@@ -1275,7 +1357,7 @@ export default function App() {
         try {
           const blob = await getProjectImage(id)
           if (blob) {
-            const prepared = await prepareImageData(blob)
+            const prepared = await prepareImageData(blob, { width: rec.imageW, height: rec.imageH })
             if (prepared && prepared.imgData.width === rec.imageW && prepared.imgData.height === rec.imageH) {
               imgDataRef.current = prepared.imgData
               imgCanvasRef.current = prepared.canvas
@@ -1326,7 +1408,9 @@ export default function App() {
       }
       setCurrentProjectId(id)
       setProjectName(meta?.name ?? '项目')
-      await loadFile(new File([blob], meta?.imageName || '图纸', { type: blob.type || 'image/png' }))
+      await loadFile(new File([blob], meta?.imageName || '图纸', { type: blob.type || 'image/png' }), meta ? {
+        id, name: meta.name, settings: meta.settings,
+      } : undefined)
     } catch (e) {
       setError('重新校准失败：' + (e instanceof Error ? e.message : String(e)))
     } finally {
@@ -1481,6 +1565,7 @@ export default function App() {
         {error && <div className="error-box wide">{error}</div>}
         <CalibrateView
           image={imgCanvasRef.current}
+          imageSize={imgDataRef.current ? { width: imgDataRef.current.width, height: imgDataRef.current.height } : undefined}
           grid={grid}
           onChange={setGrid}
           onConfirm={confirmCalibration}
@@ -1683,6 +1768,7 @@ export default function App() {
       beadTotal={plan.total}
       blankCells={blankCells}
       remapped={plan.remapped}
+      recognition={pattern.recognition}
       codeText={codeText}
       onCodeText={setCodeText}
       onApplyCodes={applyColorCodes}

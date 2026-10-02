@@ -1,4 +1,4 @@
-import { EMPTY, type Brand, type DimMode, type GridSpec, type OrderOptions, type RGB } from '../types'
+import { EMPTY, type Brand, type DimMode, type GridSpec, type OrderOptions, type RGB, type RecognitionSummary } from '../types'
 import { PALETTE } from './color'
 
 /* ------------------------------------------------------------------ *
@@ -72,6 +72,8 @@ export interface ProjectPattern {
   second?: Int16Array
   margin?: Float32Array
   flags?: Uint8Array
+  textConfidence?: Float32Array
+  recognition?: RecognitionSummary
   pageBg: RGB
 }
 

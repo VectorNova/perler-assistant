@@ -36,6 +36,22 @@ export interface GridSpec {
 /** 空格（不放豆）在内部用 -1 表示 */
 export const EMPTY = -1
 
+/** 本地字符识别的证据；未能可靠读出的格子继续保留颜色候选。 */
+export interface RecognitionSummary {
+  textCells: number
+  recognizedCells: number
+  propagatedCells: number
+  unresolvedCells: number
+  learnedDigits: number
+}
+
+export interface ChartRecognition {
+  indices: Int16Array
+  confidence: Float32Array
+  hasText: Uint8Array
+  summary: RecognitionSummary
+}
+
 export interface DetectResult {
   grid: GridSpec
   /** 0..1，越高说明网格线越明显、越可信 */
@@ -82,6 +98,9 @@ export interface Pattern {
   margin?: Float32Array
   /** 每格的问题标记位（CELL_FLAG_*），见 pattern.ts */
   flags?: Uint8Array
+  /** 字符识别置信度，与颜色色差分开存储，旧项目可缺省。 */
+  textConfidence?: Float32Array
+  recognition?: RecognitionSummary
   /** 自动识别的页面背景色 */
   pageBg: RGB
   /** 原图（用于预览） */

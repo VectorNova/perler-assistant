@@ -3,6 +3,8 @@ import type { GridSpec } from '../types'
 
 interface Props {
   image: HTMLCanvasElement
+  /** 预览画布可缩小，但标定坐标必须使用原图尺寸。 */
+  imageSize?: { width: number; height: number }
   grid: GridSpec
   onChange: (g: GridSpec) => void
   onConfirm: () => void
@@ -20,6 +22,7 @@ type DragMode = 'view' | 'grid'
 
 export default function CalibrateView({
   image,
+  imageSize,
   grid,
   onChange,
   onConfirm,
@@ -30,6 +33,8 @@ export default function CalibrateView({
   preview,
   busy,
 }: Props) {
+  const imageW = imageSize?.width ?? image.width
+  const imageH = imageSize?.height ?? image.height
   const wrapRef = useRef<HTMLDivElement | null>(null)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const [size, setSize] = useState({ w: 640, h: 480 })
@@ -68,15 +73,15 @@ export default function CalibrateView({
 
   const fit = useCallback(() => {
     const { w, h } = size
-    const s = Math.min((w - 24) / image.width, (h - 24) / image.height)
-    setView({ scale: s, tx: (w - image.width * s) / 2, ty: (h - image.height * s) / 2 })
-  }, [size, image])
+    const s = Math.min((w - 24) / imageW, (h - 24) / imageH)
+    setView({ scale: s, tx: (w - imageW * s) / 2, ty: (h - imageH * s) / 2 })
+  }, [size, imageW, imageH])
 
   useEffect(() => {
     fit()
     // 仅在容器尺寸变化时重新适应
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [size.w, size.h, image])
+  }, [size.w, size.h, image, imageW, imageH])
 
   useEffect(() => {
     const cv = canvasRef.current
@@ -98,7 +103,7 @@ export default function CalibrateView({
     const { scale, tx, ty } = view
     ctx.save()
     ctx.imageSmoothingEnabled = scale < 1
-    ctx.drawImage(image, tx, ty, image.width * scale, image.height * scale)
+    ctx.drawImage(image, tx, ty, imageW * scale, imageH * scale)
     ctx.restore()
 
     const g = grid
@@ -107,7 +112,7 @@ export default function CalibrateView({
 
     ctx.save()
     ctx.beginPath()
-    ctx.rect(tx, ty, image.width * scale, image.height * scale)
+    ctx.rect(tx, ty, imageW * scale, imageH * scale)
     ctx.clip()
 
     // 采样区域（内缩 20%），直观看到每格采的是哪块像素
@@ -167,7 +172,7 @@ export default function CalibrateView({
       cols * cellW * scale,
       rows * cellH * scale,
     )
-  }, [size, view, grid, image, showInset])
+  }, [size, view, grid, image, imageW, imageH, showInset])
 
   const pointers = useRef(new Map<number, { x: number; y: number }>())
   const drag = useRef({ moved: false, pinch: 0 })
@@ -345,7 +350,7 @@ export default function CalibrateView({
             type="button"
             className="btn"
             onClick={() =>
-              setNum({ offsetX: 0, offsetY: 0, cellW: 20, cellH: 20, cols: Math.round(image.width / 20), rows: Math.round(image.height / 20) })
+              setNum({ offsetX: 0, offsetY: 0, cellW: 20, cellH: 20, cols: Math.round(imageW / 20), rows: Math.round(imageH / 20) })
             }
           >
             重置

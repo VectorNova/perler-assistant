@@ -551,6 +551,21 @@ function longestRun(ks: number[], maxGap = 2): { start: number; end: number } {
   return { start: bestStart, end: bestEnd }
 }
 
+/**
+ * Prefer a complete lattice when it covers nearly all of the tolerant run.
+ * A legend often starts one empty row below a chart and happens to align with
+ * the same pitch. Joining across that empty row adds the legend to the pattern.
+ * Keep the tolerant run for charts whose faint/occluded lines really do have
+ * several gaps; a short uninterrupted fragment must not crop such a chart.
+ */
+function dominantLineRun(ks: number[]): { start: number; end: number } {
+  const tolerant = longestRun(ks)
+  const continuous = longestRun(ks, 0)
+  const span = tolerant.end - tolerant.start
+  if (span > 0 && continuous.end - continuous.start >= span * 0.85) return continuous
+  return tolerant
+}
+
 /** 从剖面里重新收集落在阈值之上的格线索引（用于格线区段模式） */
 function collectKs(prof: Float64Array, a: number, b: number): number[] {
   const st = stats(prof)
@@ -977,6 +992,32 @@ export function gridFromCellCount(
   snapped: string
 } | null {
   if (!Number.isFinite(cols) || !Number.isFinite(rows) || cols < 1 || rows < 1) return null
+  // Count is a constraint, not permission to stretch a box that includes rulers.
+  // When the full-resolution line lattice already satisfies it, use those exact
+  // boundaries. Section-line endpoints can include the numbering strips, and
+  // their first line can be several cells inside the actual pattern.
+  const detected = detectGrid(img)
+  if (
+    detected.confidence >= 0.65 &&
+    detected.grid.cols === Math.round(cols) &&
+    detected.grid.rows === Math.round(rows)
+  ) {
+    const grid = detected.grid
+    return {
+      grid,
+      box: {
+        x0: grid.offsetX,
+        y0: grid.offsetY,
+        x1: grid.offsetX + grid.cols * grid.cellW - 1,
+        y1: grid.offsetY + grid.rows * grid.cellH - 1,
+      },
+      qX: grid.cellW,
+      qY: grid.cellH,
+      px: ((grid.offsetX % grid.cellW) + grid.cellW) % grid.cellW,
+      py: ((grid.offsetY % grid.cellH) + grid.cellH) % grid.cellH,
+      snapped: `完整格线与标注格数一致，沿用格线定位（${grid.cols}×${grid.rows}）\n${detected.debug ?? ''}`,
+    }
+  }
   const bg = estimatePageBackground(img)
   const notes: string[] = []
 
@@ -1206,8 +1247,8 @@ export function detectGrid(img: ImageData): DetectResult {
 
   if (!grid && bX > 0 && bY > 0) {
     // 没有留白边距：用格线的最长连续区段定范围
-    const colRun = colFit ? longestRun(collectKs(colProf, aX, bX)) : null
-    const rowRun = rowFit ? longestRun(collectKs(rowProf, aY, bY)) : null
+    const colRun = colFit ? dominantLineRun(collectKs(colProf, aX, bX)) : null
+    const rowRun = rowFit ? dominantLineRun(collectKs(rowProf, aY, bY)) : null
     let offsetX = colRun ? aX + bX * colRun.start : aX
     let cols = colRun ? colRun.end - colRun.start : Math.max(1, Math.round(W / bX))
     let offsetY = rowRun ? aY + bY * rowRun.start : aY

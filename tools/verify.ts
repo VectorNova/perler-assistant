@@ -4,13 +4,13 @@
  */
 import { deflateSync, inflateSync } from 'node:zlib'
 import { writeFileSync, mkdirSync } from 'node:fs'
-import { PALETTE, deltaE2000, rgbToLab } from '../src/lib/color'
+import { deltaE2000, rgbToLab } from '../src/lib/color'
 import { detectGrid, estimatePageBackground, debugProfiles } from '../src/lib/gridDetect'
 import { buildPattern, derivePlan, rawCounts } from '../src/lib/pattern'
-import { CELL_CLOSE_COLORS, CLOSE_COLORS_MARGIN, lowConfidenceCells } from '../src/lib/pattern'
+import { CELL_CLOSE_COLORS, CELL_TEXT_UNCERTAIN, CELL_TEXT_CONFLICT, CLOSE_COLORS_MARGIN, lowConfidenceCells } from '../src/lib/pattern'
 import { buildRegions, buildSteps } from '../src/lib/order'
 import { PALETTE, codeOf, colorCacheKey, formatColorCode, indicesInSystem, nearestPaletteIndex, resolveColorCodes } from '../src/lib/color'
-import { EMPTY, type GridSpec, type Region, type RegionOrderMode } from '../src/types'
+import { EMPTY, type ChartRecognition, type GridSpec, type Region, type RegionOrderMode, type RGB } from '../src/types'
 
 /* ----------------------------- PNG 编解码 ----------------------------- */
 
@@ -860,6 +860,150 @@ function verifyCellEvidence(c: Case, spec: CaseSpec): Report {
   }
 }
 
+/* ----------------------------- 文字优先导入校验 ----------------------------- */
+
+/** 小型有独立真值的填色图：把颜色采样与字形解码分开验证。 */
+function precisionFixture(colors: RGB[]) {
+  const cell = 40
+  const bmp = new Bmp(colors.length * cell, cell, [255, 255, 255])
+  colors.forEach((color, i) => bmp.fillRect(i * cell, 0, (i + 1) * cell, cell, color))
+  const { width, height, rgba } = decodePng(encodePng(bmp.w, bmp.h, bmp.px))
+  const img = { width, height, data: rgba, colorSpace: 'srgb' } as unknown as ImageData
+  const grid: GridSpec = { offsetX: 0, offsetY: 0, cellW: cell, cellH: cell, cols: colors.length, rows: 1 }
+  return { img, grid }
+}
+
+function precisionIndex(code: string): number {
+  const index = resolveColorCodes(code, 'MARD').indices[0]
+  if (index === undefined) throw new Error(`测试色号缺失：${code}`)
+  return index
+}
+
+/**
+ * 这里只注入文字识别器输出，不把「公共色板 RGB」当作图纸色号真值。
+ * 真实 PNG 的字形解码由 chart 回归脚本另行验证。
+ */
+function textEvidence(indices: number[], confidence: number[], hasText = indices.map(() => 1)): ChartRecognition {
+  const recognizedCells = indices.filter((index, i) => index >= 0 && confidence[i] >= 0.85).length
+  const textCells = hasText.filter(Boolean).length
+  return {
+    indices: new Int16Array(indices),
+    confidence: new Float32Array(confidence),
+    hasText: new Uint8Array(hasText),
+    summary: {
+      textCells,
+      recognizedCells,
+      propagatedCells: 0,
+      unresolvedCells: textCells - recognizedCells,
+      learnedDigits: 0,
+    },
+  }
+}
+
+function verifyPreciseImport(): Report {
+  const checks: [string, boolean, string][] = []
+  const base = { name: 'precision', imageUrl: '', imageHash: 'precision', dropBackground: false }
+  const g15 = precisionIndex('G15')
+  const h21 = precisionIndex('H21')
+  const near = precisionFixture([PALETTE[g15].rgb, PALETTE[h21].rgb, PALETTE[g15].rgb])
+  const independent = buildPattern(near.img, near.grid, base)
+  const legacy = buildPattern(near.img, near.grid, { ...base, disableRegionConsistency: false })
+  checks.push([
+    '相邻 G15/H21 保留原本的真实近色边界',
+    independent.pattern.cells.join(',') === [g15, h21, g15].join(',') && independent.mergedRegions === 0,
+    `逐格结果 ${Array.from(independent.pattern.cells, (i) => codeOf(i, 'MARD')).join('/')}；显式旧合并得到 ${new Set(legacy.pattern.cells).size} 色`,
+  ])
+
+  // D17 的图纸印刷色可能恰好更接近公共色板的 C27，语义证据必须胜出。
+  const c27 = precisionIndex('C27')
+  const d17 = precisionIndex('D17')
+  const wrongRgb = precisionFixture([PALETTE[c27].rgb])
+  const colorOnly = buildPattern(wrongRgb.img, wrongRgb.grid, base)
+  const recognized = buildPattern(wrongRgb.img, wrongRgb.grid, {
+    ...base,
+    textRecognition: textEvidence([d17], [0.99]),
+  })
+  checks.push([
+    '高置信 D17 字形覆盖颜色的错误 C27 结果',
+    colorOnly.pattern.cells[0] === c27 && recognized.pattern.cells[0] === d17,
+    `仅颜色 ${codeOf(colorOnly.pattern.cells[0], 'MARD')} → 文字 ${codeOf(recognized.pattern.cells[0], 'MARD')}`,
+  ])
+  checks.push([
+    '文字识别证据随图纸保留',
+    Math.abs((recognized.pattern.textConfidence?.[0] ?? 0) - 0.99) < 0.0001 &&
+      recognized.pattern.recognition?.recognizedCells === 1,
+    `文字置信度 ${recognized.pattern.textConfidence?.[0]}，采信 ${recognized.pattern.recognition?.recognizedCells} 格`,
+  ])
+
+  const h2 = precisionIndex('H2')
+  const white = precisionFixture([PALETTE[h2].rgb, PALETTE[h2].rgb, PALETTE[h2].rgb])
+  const whiteResult = buildPattern(white.img, white.grid, {
+    ...base,
+    pageBg: [255, 255, 255],
+    dropBackground: true,
+    textRecognition: textEvidence([h2, -1, h2], [0.99, 0, 0.99], [1, 0, 1]),
+  })
+  checks.push([
+    '边界上的有色号白豆受保护，真实无字留白仍为空格',
+    whiteResult.pattern.blank.join(',') === '0,1,0' && rawCounts(whiteResult.pattern).get(h2) === 2,
+    `空白掩码 ${whiteResult.pattern.blank.join(',')}，H2 豆子 ${rawCounts(whiteResult.pattern).get(h2) ?? 0} 粒`,
+  ])
+
+  const unresolvedWhite = precisionFixture([PALETTE[h2].rgb])
+  const unresolvedWhiteResult = buildPattern(unresolvedWhite.img, unresolvedWhite.grid, {
+    ...base,
+    pageBg: [255, 255, 255],
+    dropBackground: true,
+    textRecognition: textEvidence([-1], [0]),
+  }).pattern
+  checks.push([
+    '白格存在未解码文字时保留豆子并提示人工核对',
+    unresolvedWhiteResult.blank[0] === 0 &&
+      unresolvedWhiteResult.cells[0] === h2 &&
+      ((unresolvedWhiteResult.flags?.[0] ?? 0) & CELL_TEXT_UNCERTAIN) !== 0 &&
+      lowConfidenceCells(unresolvedWhiteResult, 10).includes(0) &&
+      unresolvedWhiteResult.recognition?.recognizedCells === 0 &&
+      unresolvedWhiteResult.recognition?.unresolvedCells === 1,
+    `blank=${unresolvedWhiteResult.blank[0]}，flags=${unresolvedWhiteResult.flags?.[0]}，待确认 ${unresolvedWhiteResult.recognition?.unresolvedCells} 格`,
+  ])
+
+  const uncertain = buildPattern(wrongRgb.img, wrongRgb.grid, {
+    ...base,
+    textRecognition: textEvidence([d17], [0.4]),
+  })
+  const unknown = buildPattern(wrongRgb.img, wrongRgb.grid, {
+    ...base,
+    textRecognition: textEvidence([-1], [0]),
+  })
+  checks.push([
+    '低置信和无法解码的文字不擅自覆盖颜色，并进入待确认列表',
+    [uncertain, unknown].every(({ pattern }) =>
+      pattern.cells[0] === c27 &&
+      ((pattern.flags?.[0] ?? 0) & CELL_TEXT_UNCERTAIN) !== 0 &&
+      lowConfidenceCells(pattern, 10).includes(0)),
+    `低置信 flags=${uncertain.pattern.flags?.[0]}；未知字形 flags=${unknown.pattern.flags?.[0]}`,
+  ])
+
+  const constrained = buildPattern(wrongRgb.img, wrongRgb.grid, {
+    ...base,
+    allowed: [c27],
+    textRecognition: textEvidence([d17], [0.99]),
+  })
+  checks.push([
+    '手工指定候选集时不采信集合外的文字色号，并标明冲突',
+    constrained.pattern.cells[0] === c27 &&
+      ((constrained.pattern.flags?.[0] ?? 0) & CELL_TEXT_UNCERTAIN) !== 0 &&
+      ((constrained.pattern.flags?.[0] ?? 0) & CELL_TEXT_CONFLICT) !== 0,
+    `仅允许 C27，读到 D17 后得到 ${codeOf(constrained.pattern.cells[0], 'MARD')}，flags=${constrained.pattern.flags?.[0]}`,
+  ])
+
+  return {
+    name: '准确导入：真实近色边界、文字优先、白豆保护与待确认',
+    ok: checks.every(([, ok]) => ok),
+    lines: checks.map(([name, ok, detail]) => `  ${ok ? '✓' : '✗'} ${name} — ${detail}`),
+  }
+}
+
 /* ----------------------------- 拼块顺序校验 ----------------------------- */
 
 /**
@@ -1168,6 +1312,13 @@ function main() {
   for (const l of evRep.lines) console.log('    ' + l)
   console.log('')
   reports.push(evRep)
+
+  console.log('================ 准确导入 ================\n')
+  const preciseRep = verifyPreciseImport()
+  console.log(`${preciseRep.ok ? '✅ PASS' : '❌ FAIL'}  ${preciseRep.name}`)
+  for (const l of preciseRep.lines) console.log('    ' + l)
+  console.log('')
+  reports.push(preciseRep)
 
   console.log('================ 颜色缓存 ================\n')
   const cacheRep = verifyColorCacheKey()

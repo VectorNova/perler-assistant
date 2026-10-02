@@ -1,4 +1,5 @@
 import type { PaletteSystemId, PaletteSystemOption } from '../lib/color'
+import type { RecognitionSummary } from '../types'
 
 interface Props {
   fileName: string
@@ -10,6 +11,7 @@ interface Props {
   beadTotal: number
   blankCells: number
   remapped: number
+  recognition?: RecognitionSummary
 
   codeText: string
   onCodeText: (v: string) => void
@@ -25,7 +27,7 @@ interface Props {
 
   lowCount: number
   /** 按原因分类的待核对格子数（色号歧义 / 纯度低 / 接近背景） */
-  lowReasons: { ambiguous: number; lowPurity: number; background: number }
+  lowReasons: { ambiguous: number; lowPurity: number; background: number; text: number; conflict: number }
   lowCursor: number
   onJumpLow: () => void
   showLowConf: boolean
@@ -52,6 +54,7 @@ export default function PatternInfo({
   beadTotal,
   blankCells,
   remapped,
+  recognition,
   codeText,
   onCodeText,
   onApplyCodes,
@@ -139,12 +142,10 @@ export default function PatternInfo({
       </p>
 
       <h3>按图纸图例约束色板</h3>
-      {allowedCount === null && colorCount > 50 && (
+      {allowedCount === null && colorCount > 50 && (!recognition || recognition.recognizedCells < cols * rows * 0.5) && (
         <div className="callout">
-          现在识别出 <b>{colorCount}</b> 种颜色。拼豆图纸通常只有 20~50 色，
-          多出来的一般是逐格采样的噪声（格内色号文字、格线、JPEG 压缩）——
-          而且色板里有 34 对颜色彼此 ΔE &lt; 2.5，噪声一抖就会换色号。
-          把图纸底部图例的色号粘进下面的框里，能大幅收敛（实测某图纸 116 色 → 32 色）。
+          当前有 <b>{colorCount}</b> 种颜色，较多格子仍依赖颜色候选。
+          若数量与原图图例不同，可将图例色号输入下面的框，约束候选并检查文字冲突。
         </div>
       )}
       <p className="hint small">
@@ -190,18 +191,31 @@ export default function PatternInfo({
       {allowedCount === null && codeNote && <div className="detect-hint">{codeNote}</div>}
 
       <h3>识别质量</h3>
+      {recognition && (
+        <p className="hint small">
+          已根据格内色号确认 <b>{recognition.recognizedCells}</b> 格；
+          有字但尚未可靠读出 <b>{recognition.unresolvedCells}</b> 格。
+          程序在本机读取原图文字，未确认的格子保留颜色候选，建议对照原图核对。
+        </p>
+      )}
       {lowCount === 0 ? (
         <p className="hint small">
-          没有需要人工核对的格子：色号都分得很开，采样纯度也够。
-          （从本地进度恢复的旧项目没有识别证据，这里会显示为 0。）
+          当前没有检测到需要核对的格子。这表示现有证据通过检查，不能保证任意图纸都完全正确。
+          旧项目可能没有字符识别证据，可重新校准以使用新的识别流程。
         </p>
       ) : (
         <>
           <p className="hint small">
             有 <b>{lowCount}</b> 格建议核对，按可疑程度排序，画布上用琥珀色角标标了出来。
           </p>
-          {(lowReasons.ambiguous > 0 || lowReasons.lowPurity > 0 || lowReasons.background > 0) && (
+          {(lowReasons.ambiguous > 0 || lowReasons.lowPurity > 0 || lowReasons.background > 0 || lowReasons.text > 0) && (
             <ul className="info-list">
+              {lowReasons.text > 0 && (
+                <li><span>格内色号未能可靠读出</span><b>{lowReasons.text} 格</b></li>
+              )}
+              {lowReasons.conflict > 0 && (
+                <li><span>格内色号与所选体系或图例冲突</span><b>{lowReasons.conflict} 格</b></li>
+              )}
               {lowReasons.ambiguous > 0 && (
                 <li>
                   <span>色号分不开（第一第二候选几乎一样近）</span>
@@ -260,9 +274,9 @@ export default function PatternInfo({
 
       <h3>说明</h3>
       <p className="hint small">
-        识别结果基于每格的主色，再映射到 291 色标准拼豆色板（CIEDE2000 色差）。
-        图纸若是纯色填充，通常能精确命中色号。若发现某些格子不对，多半是网格没有完全对齐 ——
-        重新上传同一张图纸即可重新校准。
+        优先读取图纸印出的 MARD 色号；文字不清晰或字体未支持时，根据格内主色和所选色板给出候选。
+        不同制图软件的填色可能与标准色板不同，纯色填充也可能匹配到相似色号。
+        请保留原图清晰度，检查网格与待确认格子；原图有字的白色格不会因接近纸面背景而被删除。
       </p>
       <div className="btn-row">
         <button type="button" className="btn" onClick={onRecalibrate}>

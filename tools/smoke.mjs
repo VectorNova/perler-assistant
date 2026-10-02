@@ -741,7 +741,7 @@ async function main() {
     const errors = await cdp.eval(`window.__smokeErrors ? window.__smokeErrors.length : 0`)
     check('运行过程中没有未捕获的页面错误', errors === 0, `捕获到 ${errors} 个`)
 
-    /* ---- 13. 空白格开关（示例 d：贴边白色豆子被当空格） ---- */
+    /* ---- 13. 有格内印字的白豆受保护，切换背景开关也不丢豆子 ---- */
     await cdp.send('Page.navigate', { url: `${BASE}/?demo=d&auto=1` })
     await cdp.waitFor(`!!document.querySelector('.workspace')`, 40000, '示例 d 进入工作台')
     await new Promise((r) => setTimeout(r, 500))
@@ -758,8 +758,8 @@ async function main() {
     await new Promise((r) => setTimeout(r, 700))
     const dAfter = await cdp.eval(textOf('.color-row.total .count'))
     check(
-      '关掉「贴边空白当作不拼」后白色豆子回到方案里',
-      toggled === 'clicked' && parseInt(dAfter, 10) > parseInt(dBefore, 10),
+      '有格内印字的白色豆子在背景开关切换前后均被保留',
+      toggled === 'clicked' && parseInt(dBefore, 10) === 1080 && parseInt(dAfter, 10) === 1080,
       `${toggled}：${dBefore} → ${dAfter} 粒`,
     )
     await cdp.shot('smoke-5-blank-toggle.png')

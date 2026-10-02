@@ -1,4 +1,4 @@
-import { EMPTY, type GridSpec, type Pattern, type Plan, type RGB } from '../types'
+import { EMPTY, type ChartRecognition, type GridSpec, type Pattern, type Plan, type RGB } from '../types'
 import {
   PALETTE,
   colorCacheKey,
@@ -63,8 +63,10 @@ export interface BuildPatternOptions {
    * 打开这个开关只在「图例确实抄漏了几个色号」时才有意义。
    */
   allowForeignColors?: boolean
-  /** 关掉「同色区域统一取代表色」，退回逐格匹配（用于对比/排查） */
+  /** 默认逐格匹配。显式 false 可启用旧的近色区域合并，仅供对比诊断。 */
   disableRegionConsistency?: boolean
+  /** 图纸上印的色号是权威依据，可靠读到时覆盖填色近似匹配。 */
+  textRecognition?: ChartRecognition
 }
 
 export interface BuildPatternResult {
@@ -278,6 +280,11 @@ export const CELL_LOW_PURITY = 1
 export const CELL_CLOSE_COLORS = 2
 /** 背景候选：颜色接近页面底色且与外沿连通，可能其实是白色豆子 */
 export const CELL_BACKGROUND = 4
+/** 有印字但没有可靠解码，颜色候选需要人工确认。 */
+export const CELL_TEXT_UNCERTAIN = 8
+/** 读到的色号与用户限定的色号体系/图例矛盾。 */
+export const CELL_TEXT_CONFLICT = 16
+export const TEXT_CONFIDENCE_THRESHOLD = 0.85
 
 /** 纯度低于此值算「低纯度」 */
 export const LOW_PURITY_THRESHOLD = 0.55
@@ -359,7 +366,8 @@ export function buildPattern(
    * 于是同一种输入、处理顺序不同就得到不同色号 —— 可复现性问题。
    */
   let mergedRegions = 0
-  if (opts.disableRegionConsistency) {
+  // 默认逐格保留真实近色边界；传递连通合并会吞掉不同色号。
+  if (opts.disableRegionConsistency !== false) {
     for (let i = 0; i < n; i++) {
       if (purity[i] <= 0) continue
       const c: RGB = [rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2]]
@@ -391,9 +399,39 @@ export function buildPattern(
     mergedRegions = groups.length
   }
 
+  const text = opts.textRecognition
+  const validText = text && text.indices.length === n && text.confidence.length === n && text.hasText.length === n
+    ? text : undefined
+  const acceptedText = new Uint8Array(n)
+  const textFlags = new Uint8Array(n)
+  const allowedSet = allowed ? new Set(allowed) : null
+  let recognizedCells = 0
+  let unresolvedCells = 0
+  if (validText) {
+    for (let i = 0; i < n; i++) {
+      const index = validText.indices[i]
+      const confidence = validText.confidence[i]
+      const reliable = index >= 0 && index < PALETTE.length && Number.isFinite(confidence) && confidence >= TEXT_CONFIDENCE_THRESHOLD
+      const permitted = !allowedSet || allowedSet.has(index) || opts.allowForeignColors
+      if (reliable && permitted && purity[i] > 0) {
+        const colorRank = rankColor([rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2]])
+        if (allowed && colorRank.firstD > unmatchedTol) unmatched--
+        if (colorRank.foreignUsed) foreign--
+        if (cells[i] !== index) second[i] = cells[i]
+        cells[i] = index
+        acceptedText[i] = 1
+        recognizedCells++
+      } else if (validText.hasText[i]) {
+        textFlags[i] = CELL_TEXT_UNCERTAIN
+        if (reliable && !permitted) textFlags[i] |= CELL_TEXT_CONFLICT
+        unresolvedCells++
+      }
+    }
+  }
+
   if (opts.dropBackground) {
     for (let i = 0; i < n; i++) {
-      if (purity[i] <= 0) continue
+      if (purity[i] <= 0 || acceptedText[i] || validText?.hasText[i]) continue
       const c: RGB = [rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2]]
       if (deltaE2000(rgbToLab(c), bgLab) <= tol) bgLike[i] = 1
     }
@@ -414,9 +452,9 @@ export function buildPattern(
   const flags = new Uint8Array(n)
   for (let i = 0; i < n; i++) {
     if (cells[i] === EMPTY) continue
-    let f = 0
-    if (purity[i] < LOW_PURITY_THRESHOLD) f |= CELL_LOW_PURITY
-    if (second[i] >= 0 && margin[i] < CLOSE_COLORS_MARGIN) f |= CELL_CLOSE_COLORS
+    let f = textFlags[i]
+    if (!acceptedText[i] && purity[i] < LOW_PURITY_THRESHOLD) f |= CELL_LOW_PURITY
+    if (!acceptedText[i] && second[i] >= 0 && margin[i] < CLOSE_COLORS_MARGIN) f |= CELL_CLOSE_COLORS
     if (bgLike[i]) f |= CELL_BACKGROUND
     flags[i] = f
   }
@@ -433,6 +471,8 @@ export function buildPattern(
     second,
     margin,
     flags,
+    textConfidence: validText?.confidence,
+    recognition: validText ? { ...validText.summary, recognizedCells, unresolvedCells } : undefined,
     pageBg,
     imageUrl: opts.imageUrl,
     createdAt: Date.now(),
@@ -567,10 +607,11 @@ export function lowConfidenceCells(pattern: Pattern, limit = 400): number[] {
     if (pattern.cells[i] === EMPTY || pattern.blank[i]) continue
     if (hasEvidence) {
       const f = pattern.flags![i]
-      if ((f & (CELL_CLOSE_COLORS | CELL_LOW_PURITY)) === 0) continue
+      if ((f & (CELL_CLOSE_COLORS | CELL_LOW_PURITY | CELL_BACKGROUND | CELL_TEXT_UNCERTAIN | CELL_TEXT_CONFLICT)) === 0) continue
       // 歧义格子的排序键 = margin（越小越可疑）；低纯度但无歧义的给一个较大的键
       const isAmbig = (f & CELL_CLOSE_COLORS) !== 0
-      cands.push({ i, key: isAmbig ? pattern.margin![i] : CLOSE_COLORS_MARGIN + pattern.purity[i] })
+      const textProblem = (f & (CELL_TEXT_UNCERTAIN | CELL_TEXT_CONFLICT)) !== 0
+      cands.push({ i, key: textProblem ? -2 + (pattern.textConfidence?.[i] ?? 0) : isAmbig ? pattern.margin![i] : CLOSE_COLORS_MARGIN + pattern.purity[i] })
     } else if (pattern.purity[i] < LOW_PURITY_THRESHOLD) {
       cands.push({ i, key: pattern.purity[i] })
     }
