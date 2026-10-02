@@ -26,6 +26,7 @@ const ROOT = path.resolve('..')
 const CDP_PORT = 9900 + Math.floor(Math.random() * 90)
 
 const imgName = path.basename(process.argv[2] ?? '哥伦比亚图纸.png')
+const mergeDist = Number(process.env.MERGE ?? 4)
 const argCols = Number(process.argv[3] ?? 0)
 const argRows = Number(process.argv[4] ?? 0)
 const argCell = Number(process.argv[5] ?? 0)
@@ -225,9 +226,10 @@ async function main() {
       // 3b) 聚类（只保留有文字的格子）
       const cells = all.cells.filter((c) => c.chars.length > 0);
       const tClu = performance.now();
-      const cluster = window.__glyph.clusterChars(cells, 9);
+      const cluster = window.__glyph.clusterChars(cells, );
       const msCluster = performance.now() - tClu;
 
+      let searchInfo = "";
       // 3c) 按颜色组约束求解：同色同码（实测 100% 成立），组数远小于格数，候选可以放宽
       const tLab = performance.now();
       const pool = window.__glyph.indicesInSystem('MARD221');
@@ -264,13 +266,28 @@ async function main() {
           })
           .sort((a, b) => a.d - b.d)
           .map((s) => s.code);
-        groups.push({ fill: g.fill, n: g.seqs.size, seq, candidates: cands, top: cands[0] ?? '?' });
+        groups.push({ fill: g.fill, n: g.seqs.size, seq, candidates: cands, top: cands[0] ?? '?', rgb: g.rgb });
       }
       const vocab = pool.map((i) => window.__glyph.codeOf(i, 'MARD'));
+      // 代价函数：该组填色 与 候选色号在色板里的颜色 的 RGB 欧氏距离。
+      // 颜色当**弱先验**用（不能当硬约束 —— 实测这批图纸的填色和公开色板中位差 12.6）。
+      const codeRgb = new Map();
+      pool.forEach((i) => {
+        const p = window.__glyph.PALETTE[i];
+        codeRgb.set(window.__glyph.codeOf(i, 'MARD'), p.rgb);
+      });
       const label = window.__glyph.solveGroups(groups, cluster.classes.length, {
         vocab,
         prefer: groups.map((g) => g.top),
+        cost: (gi, code) => {
+          const rgb = codeRgb.get(code);
+          if (!rgb) return 1000;
+          const f = groups[gi].rgb;
+          return Math.sqrt((f[0]-rgb[0])**2 + (f[1]-rgb[1])**2 + (f[2]-rgb[2])**2);
+        },
+        maxNodes: 400000,
       });
+      searchInfo = "约束搜索：访问 " + label.nodes + " 个节点，找到 " + label.solutions + " 个可行解";
       const msLabel = performance.now() - tLab;
 
       // 5) 自检：同一填色的格子是否都被读成同一个色号
@@ -335,7 +352,7 @@ async function main() {
         charOf: label.charOf,
         stats: label.stats,
         sameSeqGroups,
-        groups: groups.map((g, i) => ({ fill: g.fill, n: g.n, top: g.top, code: label.codeOfGroup[i], compat: label.compatibleCount[i], seq: g.seq.join('') })),
+        groups: groups.map((g, i) => ({ fill: g.fill, n: g.n, top: g.top, code: label.codeOfGroup[i], compat: label.compatibleCount[i], seq: g.seq.join('-') })),
         fillSummary,
         sheet: sheet.toDataURL('image/png'),
       };
@@ -362,10 +379,10 @@ async function main() {
       `候选全不相容 ${out.stats.deadEnds} 组`)
     console.log(`「同色同码」自检：${out.sameSeqGroups}/${out.stats.groups} 个颜色组的字形序列完全一致`)
     console.log(`\n  颜色组明细（按格数排序，前 30）`)
-    console.log(`  填色       格数   序列     颜色先验首选   读出色号   相容候选数`)
-    for (const g of out.groups.slice(0, 30).sort((a, b) => b.n - a.n)) {
+    console.log(`  格数   序列          颜色先验前3      读出色号`)
+    for (const g of out.groups.slice().sort((a, b) => b.n - a.n)) {
       const mark = g.code ? (g.code === g.top ? ' ' : '*') : '?'
-      console.log(`  ${g.fill}  ${String(g.n).padStart(5)}  [${String(g.seq).padStart(5)}]   ${String(g.top).padEnd(6)}      ${String(g.code ?? '未读出').padEnd(6)}  ${String(g.compat).padStart(4)} ${mark}`)
+      console.log(`  ${String(g.n).padStart(5)}  ${String(g.seq).padEnd(12)}  ${String(g.top).padEnd(14)}  ${String(g.code ?? '未读出')}`)
     }
     console.log(`\n=== 解出的字符表（类号 → 字符）===`)
     console.log('  ' + out.charOf.map((c, i) => `${i}:${c ?? '?'}`).join('  '))

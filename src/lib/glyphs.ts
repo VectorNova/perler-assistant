@@ -563,29 +563,69 @@ export function solveGroups(
   let nodes = 0
   let solutions = 0
   let bestChar: (string | null)[] | null = null
-  let bestScore = -1
+  let bestScore = Infinity
 
-  const score = (): number => {
-    // 越多组的读出结果与「填色最近色号」一致，越可能对
-    let s = 0
-    for (let gi = 0; gi < groups.length; gi++) {
-      const p = opts.prefer?.[gi]
-      if (!p) continue
-      const seq = seqs[gi]
-      let ok = true
-      for (let k = 0; k < seq.length; k++) if (charOf[seq[k]] !== p[k]) { ok = false; break }
-      if (ok) s += groups[gi].n
+  /**
+   * 目标函数：把每个颜色组解码出的色号，与它**填色**的色差加起来，越小越好。
+   *
+   * 为什么用「色差之和」而不是「首选是否命中」：
+   * 后者只有 0/1 两个取值，几十种候选映射全同分，搜索会取第一个
+   * （实测取到过 A1/A10/A11 这种明显错误的退化解）。
+   * 色差之和是连续量，正确映射的总和会明显更低 —— 颜色虽然**不足以单独定案**
+   * （实测这批图纸的填色和公开色板中位差 12.6），但它的**相对大小**仍携带信息，
+   * 作为弱先验正合适。
+   */
+  const evaluate = (): number => {
+    if (!opts.cost) {
+      let hit = 0
+      for (let gi = 0; gi < groups.length; gi++) {
+        if (resolved[gi] && resolved[gi] === opts.prefer?.[gi]) hit += groups[gi].n
+      }
+      return -hit
     }
-    return s
+    let sum = 0
+    for (let gi = 0; gi < groups.length; gi++) {
+      const code = resolved[gi]
+      sum += code ? opts.cost(gi, code) : 1000
+    }
+    return sum
+  }
+
+  /** 在 charOf 当前状态下，逐组解析出唯一的相容色号（多于一个就取代价最小的） */
+  const resolved: (string | null)[] = new Array(groups.length).fill(null)
+  const resolveAll = (): void => {
+    for (let gi = 0; gi < groups.length; gi++) {
+      const seq = seqs[gi]
+      let best: string | null = null
+      let bestC = Infinity
+      for (const code of cands[gi]) {
+        let ok = true
+        for (let p = 0; p < seq.length; p++) {
+          const known = charOf[seq[p]]
+          if (known !== null && known !== code[p]) {
+            ok = false
+            break
+          }
+        }
+        if (!ok) continue
+        const c = opts.cost ? opts.cost(gi, code) : 0
+        if (c < bestC) {
+          bestC = c
+          best = code
+        }
+      }
+      resolved[gi] = best
+    }
   }
 
   const dfs = (k: number): void => {
     if (nodes++ > maxNodes) return
-    if (solutions >= 8) return
+    if (solutions >= 200) return
     if (k === order.length) {
       solutions++
-      const sc = score()
-      if (sc > bestScore) {
+      resolveAll()
+      const sc = evaluate()
+      if (sc < bestScore) {
         bestScore = sc
         bestChar = charOf.slice()
       }
@@ -624,7 +664,7 @@ export function solveGroups(
       if (ok) dfs(k + 1)
       for (let t = 0; t < touched.length; t++) alive[touched[t]] = saved[t]
       charOf[cls] = null
-      if (solutions >= 8) return
+      if (solutions >= 200) return
     }
   }
   dfs(0)
@@ -684,6 +724,8 @@ export interface SolveOptions {
   /** 每组的颜色先验首选，仅用于在多个解之间挑最像的 */
   prefer?: string[]
   maxNodes?: number
+  /** 某组解码成某色号的代价（用填色与色板的色差）；不给则退化成「首选命中数」 */
+  cost?: (groupIndex: number, code: string) => number
 }
 
 
