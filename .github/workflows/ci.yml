@@ -1,0 +1,43 @@
+name: CI — 构建 + 验证
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# 同一分支的旧跑批自动取消，省 CI 额度
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: build + verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 构建 + 验证（npm test = build && verify）
+        env:
+          BASE_PATH: /perler-assistant/
+        run: npm test
+
+      - name: 确认构建产物在
+        run: |
+          set -e
+          for f in dist/index.html dist/sw.js dist/manifest.webmanifest; do
+            test -f "$f" || { echo "缺少 $f"; exit 1; }
+          done
+          echo "产物 OK，大小：$(du -sh dist | cut -f1)"
