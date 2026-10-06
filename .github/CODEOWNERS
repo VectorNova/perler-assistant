@@ -1,0 +1,26 @@
+# CODEOWNERS — 谁负责哪些文件
+#
+# 作用：PR 改到这些路径时，自动请求对应的人 review。
+# 注意：目前没开「必须 owner 批准才能合」，所以这里是提醒性质，不是硬门槛。
+# 以后人手多了，可以在分支保护规则里打开「Require review from Code Owners」。
+
+# ── 默认：仓库所有者 ──────────────────────────
+*                                   @VectorNova
+
+# ── 识别核心（改动影响最大，务必 owner 过目）──
+/src/lib/gridDetect.ts              @VectorNova
+/src/lib/color.ts                   @VectorNova
+/src/lib/pattern.ts                 @VectorNova
+/src/lib/order.ts                   @VectorNova
+/src/types.ts                       @VectorNova
+
+# ── 验证基准（改这个等于改考卷）──────────────
+/tools/verify.ts                    @VectorNova
+/tools/ocr-fixture.ts               @VectorNova
+/tools/ocr-fixture-glyphs.json      @VectorNova
+
+# ── 构建与部署配置 ────────────────────────────
+/.github/                           @VectorNova
+/package.json                       @VectorNova
+/vite.config.ts                     @VectorNova
+/tsconfig.json                      @VectorNova
