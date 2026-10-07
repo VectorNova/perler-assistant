@@ -193,6 +193,7 @@ export default function PatternInfo({
       <h3>识别质量</h3>
       {recognition && (
         <p className="hint small">
+          {!!recognition.legendColors && <>已读取图纸图例 <b>{recognition.legendColors}</b> 色，并按本图纸的色块校准候选。<br /></>}
           已根据格内色号确认 <b>{recognition.recognizedCells}</b> 格；
           有字但尚未可靠读出 <b>{recognition.unresolvedCells}</b> 格。
           程序在本机读取原图文字，未确认的格子保留颜色候选，建议对照原图核对。
@@ -280,7 +281,7 @@ export default function PatternInfo({
       </p>
       <div className="btn-row">
         <button type="button" className="btn" onClick={onRecalibrate}>
-          重新上传并校准
+          用原图重新校准
         </button>
       </div>
     </div>

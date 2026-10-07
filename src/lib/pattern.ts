@@ -1,4 +1,4 @@
-import { EMPTY, type ChartRecognition, type GridSpec, type Pattern, type Plan, type RGB } from '../types'
+import { EMPTY, type ChartRecognition, type GridSpec, type Lab, type Pattern, type Plan, type RGB } from '../types'
 import {
   PALETTE,
   colorCacheKey,
@@ -67,6 +67,8 @@ export interface BuildPatternOptions {
   disableRegionConsistency?: boolean
   /** 图纸上印的色号是权威依据，可靠读到时覆盖填色近似匹配。 */
   textRecognition?: ChartRecognition
+  /** 用可靠重复色号校准本张图纸的填色；显式 false 仅用于诊断比较。 */
+  calibrateFromText?: boolean
 }
 
 export interface BuildPatternResult {
@@ -80,6 +82,99 @@ export interface BuildPatternResult {
   foreign: number
   /** 合并掉的同色区块数（区域一致性生效的证据） */
   mergedRegions: number
+  /** 通过本图纸的重复文字/填色证据修正的无可靠文字格数。 */
+  calibratedCells: number
+}
+
+interface FillAnchor {
+  index: number
+  lab: Lab
+}
+
+/** 重复可靠色号校准本图纸的填色；单个色号不作为其它格子的推断依据。 */
+function chartFillAnchors(
+  rgb: Uint8ClampedArray,
+  purity: Float32Array,
+  cells: Int16Array,
+  acceptedText: Uint8Array,
+): FillAnchor[] {
+  const samples = new Map<number, RGB[]>()
+  for (let i = 0; i < cells.length; i++) {
+    if (!acceptedText[i] || purity[i] < 0.3) continue
+    const list = samples.get(cells[i]) ?? []
+    list.push([rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2]])
+    samples.set(cells[i], list)
+  }
+  const anchors: FillAnchor[] = []
+  for (const [index, colors] of samples) {
+    if (colors.length < 3) continue
+    // 中位数排除少数被笔画或水印染色的格子。
+    const median = (channel: number) => colors.map((c) => c[channel]).sort((a, b) => a - b)[colors.length >> 1]
+    const lab = rgbToLab([median(0), median(1), median(2)])
+    const consistent = colors.filter((color) => deltaE2000(rgbToLab(color), lab) <= 3.5).length
+    if (consistent < 3 || consistent < colors.length * 0.75) continue
+    anchors.push({ index, lab })
+  }
+  return anchors
+}
+
+/** 无字格仍有部分未被水印遮住的纸面；只收集候选，最终必须从外沿连通。 */
+function hasPaperPixels(img: ImageData, grid: GridSpec, i: number, pageBg: RGB): boolean {
+  const row = Math.floor(i / grid.cols)
+  const col = i % grid.cols
+  const inset = Math.max(2, Math.round(Math.min(grid.cellW, grid.cellH) * 0.12))
+  const x0 = Math.max(0, Math.round(grid.offsetX + col * grid.cellW) + inset)
+  const y0 = Math.max(0, Math.round(grid.offsetY + row * grid.cellH) + inset)
+  const x1 = Math.min(img.width, Math.round(grid.offsetX + (col + 1) * grid.cellW) - inset)
+  const y1 = Math.min(img.height, Math.round(grid.offsetY + (row + 1) * grid.cellH) - inset)
+  const band = Math.max(1, Math.round(Math.min(grid.cellW, grid.cellH) * 0.2))
+  let paper = 0
+  let total = 0
+  for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+    if (x >= x0 + band && x < x1 - band && y >= y0 + band && y < y1 - band) continue
+    const p = (y * img.width + x) * 4
+    if (img.data[p + 3] < 128) continue
+    total++
+    if (Math.abs(img.data[p] - pageBg[0]) <= 24 &&
+      Math.abs(img.data[p + 1] - pageBg[1]) <= 24 &&
+      Math.abs(img.data[p + 2] - pageBg[2]) <= 24) paper++
+  }
+  return total >= 16 && paper / total >= 0.15
+}
+
+/** 水印可能占多数，只有内侧环中确实残留图例原色且证据分离时才恢复填色。 */
+function undamagedFill(
+  img: ImageData, grid: GridSpec, i: number, candidates: readonly number[],
+  labs: ReadonlyMap<number, Lab>, cache: Map<number, Rank>,
+): Rank | null {
+  const row = Math.floor(i / grid.cols), col = i % grid.cols
+  const side = Math.min(grid.cellW, grid.cellH)
+  const inset = Math.max(2, Math.round(side * 0.12)), band = Math.max(1, Math.round(side * 0.2))
+  const x0 = Math.max(0, Math.round(grid.offsetX + col * grid.cellW) + inset)
+  const y0 = Math.max(0, Math.round(grid.offsetY + row * grid.cellH) + inset)
+  const x1 = Math.min(img.width, Math.round(grid.offsetX + (col + 1) * grid.cellW) - inset)
+  const y1 = Math.min(img.height, Math.round(grid.offsetY + (row + 1) * grid.cellH) - inset)
+  const votes = new Map<number, { n: number; distance: number }>()
+  let total = 0
+  for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+    if (x >= x0 + band && x < x1 - band && y >= y0 + band && y < y1 - band) continue
+    const p = (y * img.width + x) * 4
+    if (img.data[p + 3] < 128) continue
+    total++
+    const color: RGB = [img.data[p], img.data[p + 1], img.data[p + 2]]
+    const key = colorCacheKey(color)
+    let rank = cache.get(key)
+    if (!rank) { rank = rankAmong(color, candidates, labs); cache.set(key, rank) }
+    if (rank.firstD > 2.5 || rank.secondD - rank.firstD < 0.75) continue
+    const vote = votes.get(rank.first) ?? { n: 0, distance: 0 }
+    vote.n++; vote.distance += rank.firstD
+    votes.set(rank.first, vote)
+  }
+  const ranked = [...votes].sort((a, b) => b[1].n - a[1].n)
+  const best = ranked[0], next = ranked[1]
+  if (!best || total < 16 || best[1].n < Math.max(32, total * 0.1) || (next && best[1].n < next[1].n * 2)) return null
+  return { first: best[0], firstD: best[1].distance / best[1].n,
+    second: next?.[0] ?? -1, secondD: 3.5, foreignUsed: false }
 }
 
 /**
@@ -227,14 +322,14 @@ interface Rank {
 }
 
 /** 在给定候选集里排前两名 */
-function rankAmong(c: RGB, candidates: readonly number[]): Rank {
+function rankAmong(c: RGB, candidates: readonly number[], chartLabs?: ReadonlyMap<number, Lab>): Rank {
   const lab = rgbToLab(c)
   let b1 = -1
   let d1 = Infinity
   let b2 = -1
   let d2 = Infinity
   for (const i of candidates) {
-    const d = deltaE2000(lab, PALETTE[i].lab)
+    const d = deltaE2000(lab, chartLabs?.get(i) ?? PALETTE[i].lab)
     if (d < d1) {
       b2 = b1
       d2 = d1
@@ -280,7 +375,7 @@ export const CELL_LOW_PURITY = 1
 export const CELL_CLOSE_COLORS = 2
 /** 背景候选：颜色接近页面底色且与外沿连通，可能其实是白色豆子 */
 export const CELL_BACKGROUND = 4
-/** 有印字但没有可靠解码，颜色候选需要人工确认。 */
+/** 印字未可靠解码，或字形结果与本图纸的重复填色证据矛盾，需要人工确认。 */
 export const CELL_TEXT_UNCERTAIN = 8
 /** 读到的色号与用户限定的色号体系/图例矛盾。 */
 export const CELL_TEXT_CONFLICT = 16
@@ -307,7 +402,26 @@ export function buildPattern(
   const pageBg = opts.pageBg ?? estimatePageBackground(img, grid)
   const bgLab = rgbToLab(pageBg)
   const tol = opts.bgTolerance ?? 9
-  const allowed = opts.allowed && opts.allowed.length > 0 ? [...opts.allowed] : null
+  const text = opts.textRecognition
+  const validText = text && text.indices.length === n && text.confidence.length === n && text.hasText.length === n
+    ? text : undefined
+  const provided = opts.allowed?.filter((index) => Number.isInteger(index) && index >= 0 && index < PALETTE.length)
+  let allowed = provided && provided.length > 0 ? [...new Set(provided)] : null
+  const legend = validText?.legend
+  const legendIndices = legend ? [...new Set(legend.indices)] : []
+  const fullLegend = legend && legend.swatches >= 2 && legend.recognized === legend.swatches &&
+    legendIndices.length === legend.swatches && legendIndices.every((index) =>
+      Number.isInteger(index) && index >= 0 && index < PALETTE.length &&
+      legend.anchors.some((anchor) => anchor.index === index && anchor.rgb.length === 3 &&
+        anchor.rgb.every((channel) => Number.isFinite(channel) && channel >= 0 && channel <= 255)))
+    ? legend : undefined
+  const cut = fullLegend ? legendIndices.filter((index) => !allowed || allowed.includes(index)) : []
+  // 用户/体系候选是严格边界，图例只能收窄，不能反向加入用户排除的色号。
+  // 无交集时保留用户的候选与冲突证据，不能退回全色板。
+  const effectiveLegend = cut.length > 0 ? fullLegend : undefined
+  if (effectiveLegend) allowed = cut
+  const legendLabs = new Map<number, Lab>(effectiveLegend?.anchors
+    .filter((anchor) => cut.includes(anchor.index)).map((anchor) => [anchor.index, rgbToLab(anchor.rgb)]))
   const unmatchedTol = opts.unmatchedTolerance ?? 14
 
   const cells = new Int16Array(n)
@@ -340,12 +454,12 @@ export function buildPattern(
     if (!allowed) {
       r = rankAllPalette(c)
     } else {
-      r = rankAmong(c, allowed)
+      r = rankAmong(c, allowed, legendLabs)
       if (!Number.isFinite(r.firstD) || r.first >= PALETTE.length) {
         const g = rankAllPalette(c)
         r = { ...r, first: g.first, firstD: g.firstD }
       }
-      if (r.firstD > unmatchedTol && opts.allowForeignColors) {
+      if (r.firstD > unmatchedTol && opts.allowForeignColors && !effectiveLegend) {
         // 只有显式打开「允许图例之外的颜色」才回退到全色板；
         // 默认严格只用图例 —— 硬塞一个图例外的色号就等于凭空造色号
         const g = rankAllPalette(c)
@@ -399,9 +513,6 @@ export function buildPattern(
     mergedRegions = groups.length
   }
 
-  const text = opts.textRecognition
-  const validText = text && text.indices.length === n && text.confidence.length === n && text.hasText.length === n
-    ? text : undefined
   const acceptedText = new Uint8Array(n)
   const textFlags = new Uint8Array(n)
   const allowedSet = allowed ? new Set(allowed) : null
@@ -412,7 +523,7 @@ export function buildPattern(
       const index = validText.indices[i]
       const confidence = validText.confidence[i]
       const reliable = index >= 0 && index < PALETTE.length && Number.isFinite(confidence) && confidence >= TEXT_CONFIDENCE_THRESHOLD
-      const permitted = !allowedSet || allowedSet.has(index) || opts.allowForeignColors
+      const permitted = !allowedSet || allowedSet.has(index) || (opts.allowForeignColors && !effectiveLegend)
       if (reliable && permitted && purity[i] > 0) {
         const colorRank = rankColor([rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2]])
         if (allowed && colorRank.firstD > unmatchedTol) unmatched--
@@ -429,11 +540,72 @@ export function buildPattern(
     }
   }
 
+  let calibratedCells = 0
+  if (validText && opts.calibrateFromText !== false) {
+    const ownAnchor = new Map(chartFillAnchors(rgb, purity, cells, acceptedText).map((anchor) => [anchor.index, anchor]))
+    // 图例独立于格内识别，是更可靠的本图填色校准来源。
+    for (const [index, lab] of legendLabs) ownAnchor.set(index, { index, lab })
+    const anchors = [...ownAnchor.values()]
+    for (let i = 0; i < n; i++) {
+      if (cells[i] === EMPTY || textFlags[i] & CELL_TEXT_CONFLICT) continue
+      const color: RGB = [rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2]]
+      const lab = rgbToLab(color)
+      let best: FillAnchor | undefined
+      let bestD = Infinity
+      let nextD = Infinity
+      for (const anchor of anchors) {
+        const d = deltaE2000(lab, anchor.lab)
+        if (d < bestD) { nextD = bestD; bestD = d; best = anchor }
+        else if (d < nextD) nextD = d
+      }
+      if (!best || best.index === cells[i] || bestD > 3.5) continue
+      const current = ownAnchor.get(cells[i])
+      const currentD = deltaE2000(lab, current?.lab ?? PALETTE[cells[i]].lab)
+      // 字形置信度并不等于色号正确率。本图重复填色明显矛盾时提示核对，
+      // 仍保留图例内的文字结果，避免吞掉真实的单格不同色号。
+      if (acceptedText[i]) {
+        if (bestD <= 2 && currentD - bestD >= 6) {
+          second[i] = best.index
+          textFlags[i] |= CELL_TEXT_UNCERTAIN
+        }
+        continue
+      }
+      if (nextD - bestD < 0.75) continue
+      // 完全相同的重复填色是强证据；否则要求显著改善，
+      // 不能因为另一种颜色更常见就吞掉真实的单格近色。
+      if (bestD > 0.15 && currentD - bestD < 1) continue
+      second[i] = cells[i]
+      cells[i] = best.index
+      margin[i] = Math.max(0, Math.min(nextD - bestD, currentD - bestD))
+      calibratedCells++
+    }
+  }
+
+  if (effectiveLegend && allowed) {
+    const pixelRanks = new Map<number, Rank>()
+    for (let i = 0; i < n; i++) {
+      if (purity[i] <= 0 || acceptedText[i]) continue
+      const current = rankColor([rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2]])
+      if (current.firstD <= 3 || purity[i] > 0.85) continue
+      const recovered = undamagedFill(img, grid, i, allowed, legendLabs, pixelRanks)
+      if (!recovered || recovered.first === cells[i]) continue
+      second[i] = cells[i]
+      cells[i] = recovered.first
+      margin[i] = recovered.secondD - recovered.firstD
+      textFlags[i] |= CELL_TEXT_UNCERTAIN
+      calibratedCells++
+    }
+  }
+
   if (opts.dropBackground) {
+    // 只有明显印满色号的图纸才利用局部纸面证据。普通无字像素画
+    // 继续使用原有主色判定，避免把作品中的白色细节认成空白。
+    const labelledChart = !!validText && validText.summary.textCells >= Math.max(20, n * 0.25)
     for (let i = 0; i < n; i++) {
       if (purity[i] <= 0 || acceptedText[i] || validText?.hasText[i]) continue
       const c: RGB = [rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2]]
-      if (deltaE2000(rgbToLab(c), bgLab) <= tol) bgLike[i] = 1
+      if (deltaE2000(rgbToLab(c), bgLab) <= tol ||
+        (labelledChart && hasPaperPixels(img, grid, i, pageBg))) bgLike[i] = 1
     }
   }
 
@@ -472,13 +644,14 @@ export function buildPattern(
     margin,
     flags,
     textConfidence: validText?.confidence,
-    recognition: validText ? { ...validText.summary, recognizedCells, unresolvedCells } : undefined,
+    recognition: validText ? { ...validText.summary, recognizedCells, unresolvedCells,
+      ...(effectiveLegend ? { legendColors: cut.length } : {}) } : undefined,
     pageBg,
     imageUrl: opts.imageUrl,
     createdAt: Date.now(),
   }
 
-  return { pattern, pageBg, backgroundCells, unmatched, foreign, mergedRegions }
+  return { pattern, pageBg, backgroundCells, unmatched, foreign, mergedRegions, calibratedCells }
 }
 
 /**
@@ -611,7 +784,13 @@ export function lowConfidenceCells(pattern: Pattern, limit = 400): number[] {
       // 歧义格子的排序键 = margin（越小越可疑）；低纯度但无歧义的给一个较大的键
       const isAmbig = (f & CELL_CLOSE_COLORS) !== 0
       const textProblem = (f & (CELL_TEXT_UNCERTAIN | CELL_TEXT_CONFLICT)) !== 0
-      cands.push({ i, key: textProblem ? -2 + (pattern.textConfidence?.[i] ?? 0) : isAmbig ? pattern.margin![i] : CLOSE_COLORS_MARGIN + pattern.purity[i] })
+      // 已采信字形却与填色矛盾、或色号超出图例，比单纯未读清更值得先核对。
+      // 未读清格按采样纯度排列，使水印污染不会被大量清晰填色格淹没。
+      const glyphConflict = textProblem && (pattern.textConfidence?.[i] ?? 0) >= TEXT_CONFIDENCE_THRESHOLD
+      cands.push({ i, key: f & CELL_TEXT_CONFLICT ? -4 + pattern.purity[i]
+        : glyphConflict ? -5 + pattern.purity[i]
+          : textProblem ? -2 + pattern.purity[i]
+            : isAmbig ? pattern.margin![i] : CLOSE_COLORS_MARGIN + pattern.purity[i] })
     } else if (pattern.purity[i] < LOW_PURITY_THRESHOLD) {
       cands.push({ i, key: pattern.purity[i] })
     }

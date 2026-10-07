@@ -1433,6 +1433,7 @@ export default function App() {
       await loadFile(new File([blob], meta?.imageName || '图纸', { type: blob.type || 'image/png' }), meta ? {
         id, name: meta.name, settings: meta.settings,
       } : undefined)
+      setNotice('正在用保存的原图重新识别；确认校准后将更新原项目并重置拼豆进度。')
     } catch (e) {
       setError('重新校准失败：' + (e instanceof Error ? e.message : String(e)))
     } finally {
@@ -1867,7 +1868,7 @@ export default function App() {
         })
         downloadText(text, fileName.replace(/\.[^.]+$/, '') + '-进度.json')
       }}
-      onRecalibrate={startOver}
+      onRecalibrate={() => currentProjectId ? void recalibrateProject(currentProjectId) : startOver()}
     />
   )
 

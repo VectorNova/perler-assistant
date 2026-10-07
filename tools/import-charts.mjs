@@ -86,6 +86,16 @@ const readProject = (file) => evaluate(`(async () => {
   } finally { db.close(); }
 })()`)
 
+async function waitForProject(file) {
+  const started = Date.now()
+  while (Date.now() - started < 45000) {
+    const record = await readProject(file)
+    if (record?.imageSaved) return record
+    await delay(150)
+  }
+  throw new Error(`Timeout waiting for saved project ${file}`)
+}
+
 const reports = []
 try {
   let target
@@ -122,8 +132,8 @@ try {
     await waitFor(`!!document.querySelector('.calibrate-panel .primary.big:not(:disabled)')`,'automatic grid/calibration')
     await evaluate(`document.querySelector('.calibrate-panel .primary.big').click()`)
     await waitFor(`!!document.querySelector('.color-row') && !!document.querySelector('.pattern-canvas')`,'work view',90000)
-    await waitFor(`document.body.textContent.includes('项目已保存')`,'saved project')
-    const before=await readProject(file)
+    // 空白格提示会覆盖保存通知，直接检查落库结果，避免依赖短暂的提示文案。
+    const before=await waitForProject(file)
     if(!before)throw new Error('Project missing from IndexedDB after import')
     const n=before.grid.cols*before.grid.rows
     const sourceDimensions=pngDimensions(files[i])
@@ -155,7 +165,7 @@ try {
     if(!ok)failed=true
     reports.push({file,sourceDimensions,nativeDimensions,before,after,persisted,stable,summaryRestored,ok})
     console.log(`${ok?'PASS':'FAIL'} import/reload ${file}: grid ${before.grid.cols}×${before.grid.rows}, original size=${nativeDimensions}, legend counts=${!!recognized}, Float32 confidence=${persisted}, reload stable=${stable}, UI recognition restored=${summaryRestored}`)
-    if(!await click('换一张') && !await click('← 首页'))throw new Error('Home button missing')
+    if(!await click('换一张') && !await click('← 首页') && !await evaluate(`(() => { const b = document.querySelector('button[aria-label="返回首页"]'); if (!b) return false; b.click(); return true; })()`))throw new Error('Home button missing')
     await waitFor(`!!document.querySelector('input[type=file]')`,'upload input for next chart')
   }
   mkdirSync('_shots',{recursive:true})

@@ -42,7 +42,7 @@ async function analyzeChart(img: ImageData, system: PaletteSystemId = 'MARD221')
     changedCells,
     blankCells: blankCount(enhanced.pattern),
     baselineBlankCells: blankCount(baseline.pattern),
-    ocr: recognition.summary,
+    ocr: enhanced.pattern.recognition,
     elapsedMs: Math.round(performance.now() - started),
   }
 }

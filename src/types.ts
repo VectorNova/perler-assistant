@@ -43,6 +43,16 @@ export interface RecognitionSummary {
   propagatedCells: number
   unresolvedCells: number
   learnedDigits: number
+  /** 完整、可信的图例色号数量；旧项目没有这一字段。 */
+  legendColors?: number
+}
+
+/** 独立读取图例文字后得到的本图纸候选与填色，不能由格内多数票生成。 */
+export interface ChartLegendRecognition {
+  indices: number[]
+  anchors: { index: number; rgb: RGB }[]
+  swatches: number
+  recognized: number
 }
 
 export interface ChartRecognition {
@@ -50,6 +60,7 @@ export interface ChartRecognition {
   confidence: Float32Array
   hasText: Uint8Array
   summary: RecognitionSummary
+  legend?: ChartLegendRecognition
 }
 
 export interface DetectResult {

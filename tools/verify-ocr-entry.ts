@@ -1,7 +1,9 @@
-import { recognizeChart } from '../src/lib/chartOcr'
+import { recognizeChart, recognizePrintedLabels } from '../src/lib/chartOcr'
 import { codeOf } from '../src/lib/color'
+import { detectChartLegend } from '../src/lib/chartLegend'
 import { buildPattern, CELL_TEXT_CONFLICT, CELL_TEXT_UNCERTAIN } from '../src/lib/pattern'
 import { independentOcrFixture } from './ocr-fixture'
+import { independentLegendFixture } from './ocr-legend-fixture'
 
 interface Check { name: string; ok: boolean; detail: string }
 const checks: Check[] = []
@@ -97,6 +99,39 @@ checks.push({
   name: '手工图例排除实际 D8 时保留字符冲突证据',
   ok: strongD8.indices[0] === numbered.truth[1] && (strongConstrained.flags![0] & CELL_TEXT_CONFLICT) !== 0,
   detail: `字符 ${codeOf(strongD8.indices[0], 'MARD')}，颜色候选 ${codeOf(strongConstrained.cells[0], 'MARD')}，flags=${strongConstrained.flags![0]}`,
+})
+
+const decoration = independentLegendFixture({ labels: false })
+const decorationGeometry = detectChartLegend(decoration.img, decoration.grid)
+const decorationResult = recognizeChart(decoration.img, decoration.grid)
+checks.push({
+  name: '无字彩色矩形即使几何完整也不能生成封闭图例',
+  ok: decorationGeometry?.swatches.length === 5 && decorationResult.legend === undefined,
+  detail: `几何 ${decorationGeometry?.swatches.length ?? 0} 块；完整图例 ${decorationResult.legend?.swatches ?? 0} 色`,
+})
+
+const semanticMismatch = independentLegendFixture({ gridCode: 'D8' })
+const mismatchLabels = recognizePrintedLabels(semanticMismatch.img, semanticMismatch.boxes, semanticMismatch.grid)
+const semanticResult = recognizeChart(semanticMismatch.img, semanticMismatch.grid)
+const semanticPattern = buildPattern(semanticMismatch.img, semanticMismatch.grid, {
+  name: 'independent legend semantics', imageUrl: '', imageHash: 'legend-semantic', dropBackground: false,
+  textRecognition: semanticResult,
+}).pattern
+checks.push({
+  name: '图例缺字块的公共 D6 RGB 不能排除格内可靠 D8 文字',
+  ok: mismatchLabels.slice(0, 4).every((label, i) => label.confidence >= 0.85 && codeOf(label.index, 'MARD') === semanticMismatch.codes[i]) &&
+    mismatchLabels[4].index < 0 && semanticResult.legend === undefined &&
+    Array.from(semanticResult.indices).every((index) => index === semanticMismatch.truth) &&
+    Array.from(semanticPattern.cells).every((index) => index === semanticMismatch.truth),
+  detail: `独立图例 ${mismatchLabels.filter((label) => label.confidence >= 0.85).length}/5；格内采信 ${semanticResult.summary.recognizedCells}；完整图例 ${semanticResult.legend?.swatches ?? 0} 色`,
+})
+
+const semanticAgreement = independentLegendFixture({ gridCode: 'D6' })
+const agreementResult = recognizeChart(semanticAgreement.img, semanticAgreement.grid)
+checks.push({
+  name: '缺字图例块获得公共 RGB 与可靠格内文字双证据才补全',
+  ok: agreementResult.legend?.swatches === 5 && agreementResult.legend.indices.includes(semanticAgreement.truth),
+  detail: `格内采信 ${agreementResult.summary.recognizedCells}；完整图例 ${agreementResult.legend?.swatches ?? 0} 色`,
 })
 const output = document.getElementById('result')!
 output.textContent = JSON.stringify({ staticOnly, checks, ok: checks.every((check) => check.ok) })

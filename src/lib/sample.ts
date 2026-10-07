@@ -15,8 +15,9 @@ const Q = 3 // >> 3
  *
  * 两个关键点：
  *
- * 1) 取众数（主导色）而不是均值。格子里印着深色色号文字，均值会被文字和
- *    网格线拉灰；众数几乎总是格子的填充色本身。
+ * 1) 取局部众数（主导色）而不是整格均值。JPEG 会把同一种填色分散到相邻
+ *    的量化桶；合计相邻桶的支持数，再只在这一小簇内平均，避免量化边界
+ *    把主色拆开。文字、格线和水印的远色不参与这个平均。
  *
  * 2) 采「边框」而不是「中心」。拼豆图纸的色号文字是**居中**印的，
  *    所以格子中心恰恰是最脏的地方；而贴着格线内侧的一圈是纯净填充色。
@@ -126,10 +127,36 @@ export function sampleCells(img: ImageData, grid: GridSpec): SampleResult {
         continue
       }
 
+      let bestR = 0
+      let bestG = 0
+      let bestB = 0
       for (const k of touched) {
-        if (count[k] > bestCount) {
-          bestCount = count[k]
+        const kr = k >> 10
+        const kg = (k >> 5) & 31
+        const kb = k & 31
+        let support = 0
+        let sr = 0
+        let sg = 0
+        let sb = 0
+        // 有界邻域不做传递合并：JPEG同一填色可能横跨多个8级量化桶。
+        for (let r1 = Math.max(0, kr - 1); r1 <= Math.min(31, kr + 1); r1++) {
+          for (let g1 = Math.max(0, kg - 1); g1 <= Math.min(31, kg + 1); g1++) {
+            for (let b1 = Math.max(0, kb - 1); b1 <= Math.min(31, kb + 1); b1++) {
+              const key = (r1 << 10) | (g1 << 5) | b1
+              support += count[key]
+              sr += sumR[key]
+              sg += sumG[key]
+              sb += sumB[key]
+            }
+          }
+        }
+        // 邻域支持相同时选自身像素更多的桶，保持可复现性。
+        if (support > bestCount || (support === bestCount && count[k] > count[bestKey])) {
+          bestCount = support
           bestKey = k
+          bestR = sr
+          bestG = sg
+          bestB = sb
         }
       }
       if (bestKey < 0) {
@@ -137,9 +164,9 @@ export function sampleCells(img: ImageData, grid: GridSpec): SampleResult {
         continue
       }
 
-      rgb[idx * 3] = Math.round(sumR[bestKey] / bestCount)
-      rgb[idx * 3 + 1] = Math.round(sumG[bestKey] / bestCount)
-      rgb[idx * 3 + 2] = Math.round(sumB[bestKey] / bestCount)
+      rgb[idx * 3] = Math.round(bestR / bestCount)
+      rgb[idx * 3 + 1] = Math.round(bestG / bestCount)
+      rgb[idx * 3 + 2] = Math.round(bestB / bestCount)
       purity[idx] = bestCount / total
     }
   }

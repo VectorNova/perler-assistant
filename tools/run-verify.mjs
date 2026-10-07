@@ -74,3 +74,7 @@ try {
     }
   }
 }
+
+// 主验证通过后再检查图例限制、真实少量色和水印背景恢复。
+await import('./verify-quantization.mjs')
+await import('./verify-chart-legend.mjs')

@@ -588,6 +588,64 @@ function collectKs(prof: Float64Array, a: number, b: number): number[] {
 }
 
 /**
+ * 有格线的图纸不能仅用内容包围盒定边界，底部图例或水印会把范围拉长。
+ * 先用主连续格线范围约束，再用周期及相位一致的分区线排除外围坐标栏。
+ * 只内缩已有范围，不根据某行颜色较少推断图纸已经结束。
+ */
+function constrainRuledExtent(
+  grid: GridSpec,
+  colRun: { start: number; end: number },
+  rowRun: { start: number; end: number },
+  aX: number,
+  aY: number,
+  frame: SectionFrame | null,
+): { grid: GridSpec; trimmed: boolean } {
+  const clipAxis = (
+    offset: number,
+    pitch: number,
+    count: number,
+    a: number,
+    run: { start: number; end: number },
+    frameLo?: number,
+    frameHi?: number,
+    spacing?: number,
+  ) => {
+    let start = Math.round((offset - a) / pitch)
+    let end = start + count
+    // 格线模糊或被遮挡时，短片段不足以裁图；只有主连续格线覆盖大部分
+    // 包围盒时才排除末尾少量独立图例行。
+    if (run.end - run.start >= count * 0.8) {
+      start = Math.max(start, run.start)
+      end = Math.min(end, run.end)
+    }
+    if (frameLo !== undefined && frameHi !== undefined && spacing !== undefined) {
+      const interval = Math.round(spacing / pitch)
+      const alignedSpacing = interval >= 2 && Math.abs(spacing / pitch - interval) <= 0.08
+      const lo = Math.round((frameLo - a) / pitch)
+      const hi = Math.round((frameHi - a) / pitch)
+      const tolerance = Math.max(2, pitch * 0.12)
+      const alignedEnds =
+        Math.abs(frameLo - (a + lo * pitch)) <= tolerance &&
+        Math.abs(frameHi - (a + hi * pitch)) <= tolerance
+      // 分区线可能延伸到坐标栏，只允许内缩且每侧最多两格，
+      // 避免把图案内部的红色矩形当成整幅图纸边界。
+      if (alignedSpacing && alignedEnds && lo >= start && hi <= end && lo - start <= 2 && end - hi <= 2) {
+        start = lo
+        end = hi
+      }
+    }
+    if (end <= start) return { offset, count }
+    return { offset: a + start * pitch, count: end - start }
+  }
+  const x = clipAxis(grid.offsetX, grid.cellW, grid.cols, aX, colRun, frame?.x0, frame?.x1, frame?.spacingX)
+  const y = clipAxis(grid.offsetY, grid.cellH, grid.rows, aY, rowRun, frame?.y0, frame?.y1, frame?.spacingY)
+  return {
+    grid: { ...grid, offsetX: x.offset, offsetY: y.offset, cols: x.count, rows: y.count },
+    trimmed: x.count !== grid.cols || y.count !== grid.rows,
+  }
+}
+
+/**
  * 内容包围盒（以「格」为单位）。
  * 图例表格里的细线占不满一格，格子的主色仍是背景色，因此会被自然排除。
  */
@@ -1284,6 +1342,19 @@ export function detectGrid(img: ImageData): DetectResult {
       rows: Math.max(1, Math.round(H / b)),
     }
     extentMode = '均分兜底'
+  }
+
+  if (
+    extentMode === '内容包围盒' &&
+    profileMode === '格线脊' &&
+    colFit && rowFit &&
+    colPitch.strength >= 0.45 && rowPitch.strength >= 0.45
+  ) {
+    const colRun = dominantLineRun(collectKs(colProf, aX, bX))
+    const rowRun = dominantLineRun(collectKs(rowProf, aY, bY))
+    const constrained = constrainRuledExtent(grid, colRun, rowRun, aX, aY, detectSectionFrame(img))
+    grid = constrained.grid
+    if (constrained.trimmed) extentMode += '+连续格线/分区边界'
   }
 
   grid.cols = Math.max(1, Math.min(grid.cols, 600))
